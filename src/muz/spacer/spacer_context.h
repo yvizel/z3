@@ -996,12 +996,16 @@ class derivation {
     /// premise must be consistent with the transition relation
     pob *create_next_child();
 
+    bool create_all_children(model &mdl, pob_ref_buffer &out);
+
     datalog::rule const &get_rule() const { return m_rule; }
     pob &get_parent() const { return m_parent; }
     ast_manager &get_ast_manager() const { return m_parent.get_ast_manager(); }
     manager &get_manager() const { return m_parent.get_manager(); }
     context &get_context() const { return m_parent.get_context(); }
     pred_transformer &pt() const { return m_parent.pt(); }
+
+    expr* get_trans() { return m_trans.get(); }
 };
 
 class pob_queue {

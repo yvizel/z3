@@ -256,6 +256,28 @@ void derivation::exist_skolemize(expr* fml, app_ref_vector& vars, expr_ref& res)
     sub(fml, res);
 }
 
+bool derivation::create_all_children(model &mdl, pob_ref_buffer &out) {
+    timeit _timer (is_trace_enabled("spacer_timeit"),
+                   "spacer::derivation::create_all_children",
+                   verbose_stream ());
+
+    pob * kid = create_first_child(mdl);
+    if (!kid) return false;
+
+    m_active++;
+    out.push_back(kid);
+
+    unsigned kids = 1;
+    while (kid = create_next_child(mdl)) {
+        kids++;
+        m_active++;
+        SASSERT(m_active == kids);
+        out.push_back(kid);
+    }
+
+    return true;
+}
+
 pob *derivation::create_next_child(model &mdl) {
     timeit _timer (is_trace_enabled("spacer_timeit"),
                    "spacer::derivation::create_next_child",
@@ -300,13 +322,15 @@ pob *derivation::create_next_child(model &mdl) {
 
     // create the post-condition by computing a post-image over summaries
     // that precede currently active premise
-    for (unsigned i = m_active + 1; i < m_premises.size(); ++i) {
+    for (unsigned i = 0; i < m_premises.size(); ++i) {
+        if (i == m_active) continue;
         summaries.push_back (m_premises [i].get_summary ());
         vars.append (m_premises [i].get_ovars ());
     }
     summaries.push_back (m_trans);
     expr_ref post(m);
     post = mk_and(summaries);
+    tout << "Printing post: " << mk_pp(post.get(), m) << std::endl;
     summaries.reset ();
 
     if (!vars.empty()) {
@@ -332,10 +356,14 @@ pob *derivation::create_next_child(model &mdl) {
         exist_skolemize(post.get(), vars, post);
     }
 
+    tout << mk_pp(post.get(), m) << "\n";
+    tout.flush();
     get_manager ().formula_o2n (post.get (), post,
                                 m_premises [m_active].get_oidx (),
                                 vars.empty());
 
+    tout << mk_pp(post.get(), m) << "\n";
+    tout.flush();
 
     /* The level and depth are taken from the parent, not the sibling.
        The reasoning is that the sibling has not been checked before,
@@ -4050,6 +4078,20 @@ bool context::create_children(pob& n, datalog::rule const& r,
                tout << "Failed to eliminate: " << vars << "\n";
         );
 
+    if (true) {
+        expr_ref_vector conjs(m);
+        flatten_and(phi, conjs);
+        tout << "Printing conjs: ";
+        for (unsigned c=0; c < conjs.size(); c++) {
+            expr* conj = conjs.get(c);
+            if (to_app(conj)->get_num_args() == 0 ||
+                (m.is_not(conj) && to_app(to_app(conj)->get_arg(0))->get_num_args() == 0)) {
+                tout << mk_epp(conj, m) << " ";
+            }
+        }
+        tout << "\n";
+    }
+
     if (m_use_gpdr && preds.size() > 1) {
         SASSERT(vars.empty());
         return gpdr_create_split_children(n, r, phi, mdl, out);
@@ -4085,6 +4127,14 @@ bool context::create_children(pob& n, datalog::rule const& r,
     }
 
     // create post for the first child and add to queue
+
+#if 1
+    bool res = deriv->create_all_children(mdl, out);
+    if (!res) {
+        dealloc(deriv);
+    }
+    return res;
+#endif
     pob* kid = deriv->create_first_child (mdl);
 
     // -- failed to create derivation, cleanup and bail out
