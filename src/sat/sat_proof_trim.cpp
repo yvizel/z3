@@ -17,6 +17,7 @@
 --*/
 
 #include "sat/sat_proof_trim.h"
+#include "sat/proof_replay_validator.h"
 
 namespace sat {
 
@@ -216,7 +217,69 @@ namespace sat {
             add_dependency(s.get_justification(v));
         }
         if (probe)
-            s.pop(1);                
+            s.pop(1);
+    }
+
+    bool proof_trim::conflict_analysis(literal_vector const& cl, clause* cp) {
+        IF_VERBOSE(3, verbose_stream() << "core " << cl << "\n");
+
+        bool res = false;
+        unsigned trail_size0 = s.m_trail.size();
+        bool probe = !cl.empty() && !s.inconsistent();
+        if (probe) {
+            SASSERT(!s.inconsistent());
+            s.push();
+            unsigned lvl = s.scope_lvl();
+            for (auto lit : cl)
+                s.assign(~lit, justification(lvl));
+            trail_size0 = s.m_trail.size();
+            s.propagate(false);
+            if (!s.inconsistent()) {
+                s.m_qhead = 0;
+                s.propagate(false);
+            }
+            if (!s.inconsistent())
+                IF_VERBOSE(0, s.display(verbose_stream() << "probe on " << cl << "\n"));
+            for (unsigned i = trail_size0; i < s.m_trail.size(); ++i)
+                m_propagated[s.m_trail[i].var()] = true;
+        }
+        SASSERT(s.inconsistent());
+        res = s.inconsistent();
+        IF_VERBOSE(3, s.display_justification(verbose_stream() << "conflict " << s.m_not_l << " ", s.m_conflict) << "\n");
+        IF_VERBOSE(3, s.display(verbose_stream()));
+
+        literal_vector chain_pivots;
+        clause_vector chain_clauses;
+
+        literal_vector conf;
+        conf.push_back(s.m_not_l);
+        if (s.m_conflict.is_clause()) {
+            auto & c = s.get_clause(s.m_conflict);
+            conf.append(c.size(), c.begin());
+        }
+        else {
+            conf.push_back(s.m_conflict.get_literal());
+        }
+        conf.push_back(s.m_not_l);
+        
+
+        sat::literal l = sat::null_literal;
+        if (s.m_not_l != null_literal) {
+            add_dependency(s.m_not_l);
+            l = ~s.m_not_l;
+        }
+
+        for (unsigned i = s.m_trail.size(); i-- > trail_size0; ) {
+            bool_var v = s.m_trail[i].var();
+            m_propagated[v] = false;
+            if (!s.is_marked(v))
+                continue;
+            s.reset_mark(v);
+        }
+        if (probe)
+            s.pop(1);
+
+        return res;
     }
 
     void proof_trim::add_dependency(literal lit) {
@@ -426,5 +489,119 @@ namespace sat {
     
     void proof_trim::infer(unsigned id) {
         assume(id, false);        
+    }
+
+    void proof_trim::replay_proof(vector<std::pair<unsigned, unsigned_vector>> const& proof, std::ostream& out) {
+        out << "; === PROOF REPLAY START ===\n";
+        out << "; Replaying " << proof.size() << " clauses\n";
+        m_conflict.reset();
+        m_units.reset();
+        for (auto const& [id, deps] : proof) {
+            if (id >= m_trail.size()) {
+                out << "; Skipping clause " << id << " (out of range)\n";
+                continue;
+            }
+
+            auto const& [trail_id, clause_lits, clause_ptr, is_add, is_initial] = m_trail[id];
+            
+            // Skip clauses not marked as core
+            auto& clause_info = m_clauses.find(clause_lits);
+            if (!clause_info.m_in_core) {
+                out << "; Skipping clause " << id << " (not in core)\n";
+                continue;
+            }
+            
+            if (deps.empty()) {
+                // This is an assumption - call assume()
+
+                init_clause();
+                for (auto lit : clause_lits) {
+                    add_literal(lit.var(), lit.sign());
+                }
+                assume(id, is_initial);
+                out << "; Replayed clause " << id << " as assumption\n";
+                out << "Literals are: ";
+                for (auto l : clause_lits)
+                    out << l << " ";
+                out << "\n";
+            } else {
+                // This is an inference
+                out << "; Replaying clause " << id << " (inferred from {";
+                for (unsigned i = 0; i < deps.size(); ++i) {
+                    if (i > 0) out << ", ";
+                    out << deps[i];
+                }
+                out << "})\n";
+
+                // TODO: Perform conflict analysis to verify RUP
+                bool res = conflict_analysis(clause_lits, clause_ptr);
+                if (res) {
+                    out << "Clause " << id << " verified via conflict analysis\n";
+                    assume(id, is_initial);
+                }
+                out << "; TODO: Verify RUP via conflict analysis\n";
+            }
+        }
+        out << "; === PROOF REPLAY COMPLETE ===\n";
+    }
+
+    void proof_trim::replay_proof_with_validation(vector<std::pair<unsigned, unsigned_vector>> const& proof, 
+                                                  std::ostream& out) {
+        out << "; === PROOF REPLAY WITH VALIDATION START ===\n";
+        out << "; Validating " << proof.size() << " clauses using proof_replay_validator\n\n";
+        
+        // Create validator instance with same parameters as this proof_trim
+        // We pass the solver's parameters and resource limit
+        params_ref p;
+        proof_replay_validator validator(p, s.m_rlimit);
+        
+        // First pass: build up validator state from trail
+        // This ensures validator has same variables and initial state
+        out << "; Building validator state from original trail...\n";
+        
+        for (auto const& [id, deps] : proof) {
+            if (id >= m_trail.size()) {
+                out << "; ERROR: clause id " << id << " out of range\n";
+                continue;
+            }
+
+            auto const& [trail_id, clause_lits, clause_ptr, is_add, is_initial] = m_trail[id];
+            
+            // Skip clauses not marked as core
+            auto& clause_info = m_clauses.find(clause_lits);
+            if (!clause_info.m_in_core) {
+                out << "; Skipping clause " << id << " (not in core)\n";
+                continue;
+            }
+            
+            // Replicate clause building in validator
+            validator.init_clause();
+            for (auto lit : clause_lits) {
+                validator.add_literal(lit.var(), lit.sign());
+            }
+            
+            if (deps.empty()) {
+                // This is an assumption
+                validator.assume(id, is_initial);
+                out << "; Clause " << id << " (assumption) added to validator\n";
+            } else {
+                // This is an inference
+                validator.infer(id);
+                out << "; Clause " << id << " (inferred from {";
+                for (unsigned i = 0; i < deps.size(); ++i) {
+                    if (i > 0) out << ", ";
+                    out << deps[i];
+                }
+                out << "}) added to validator\n";
+            }
+        }
+        
+        out << "\n; Running validation on trimmed proof...\n";
+        validator.validate_proof(proof, out);
+        
+        out << "\n; Validation Statistics:\n";
+        out << "; - Verified clauses: " << validator.get_verified_count() << "\n";
+        out << "; - Skipped clauses: " << validator.get_skipped_count() << "\n";
+        out << "; === PROOF REPLAY WITH VALIDATION COMPLETE ===\n";
     }
 }

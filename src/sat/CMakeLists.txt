@@ -25,6 +25,7 @@ z3_add_component(sat
     sat_prob.cpp
     sat_probing.cpp
     sat_proof_trim.cpp
+    proof_replay_validator.cpp
     sat_scc.cpp
     sat_simplifier.cpp
     sat_solver.cpp

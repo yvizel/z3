@@ -65,6 +65,7 @@ class proof_trim {
     bool_vector             m_is_infer;
     symbol                  m_rup;
     bool                    m_empty = false;
+    bool                    m_replay = false;
     
     void mk_clause(expr_ref_vector const& clause) {
         trim.init_clause();
@@ -142,7 +143,7 @@ public:
                     m_clauses.back().push_back(hint);
                     m_is_infer.push_back(true);
                     m_empty = true;
-                    do_trim(std::cout);
+                    do_trim(std::cout, m_replay);
                 }
                 return;
             }
@@ -160,12 +161,16 @@ public:
         m_is_infer.push_back(true);
         if (clause.empty()) {
             m_empty = true;
-            do_trim(std::cout);
+            do_trim(std::cout, m_replay);
         }
     }
     
     void updt_params(params_ref const& p) {
         trim.updt_params(p);
+    }
+
+    void set_replay(bool replay) {
+        m_replay = replay;
     }
 
     expr_ref mk_dep(unsigned id, unsigned_vector const& deps) {
@@ -177,9 +182,13 @@ public:
         return expr_ref(m.mk_app(symbol("deps"), args.size(), args.data(), m.mk_proof_sort()), m);
     }
 
-    void do_trim(std::ostream& out) {
+    void do_trim(std::ostream& out, bool replay) {
         ast_pp_util pp(m);
         auto ids = trim.trim();
+        out << "; proof trimming complete, " << ids.size() << " clauses in trimmed proof\n";
+        if (replay) {
+            trim.replay_proof(ids, out);
+        }
         for (auto const& [id, deps] : ids) {
             auto& clause = m_clauses[id];
             bool is_infer = m_is_infer[id];
@@ -246,6 +255,7 @@ class proof_cmds_imp : public proof_cmds {
     bool            m_check  = true;
     bool            m_save   = false;
     bool            m_trim   = false;
+    bool            m_replay = false;
     scoped_ptr<euf::smt_proof_checker>     m_checker;
     scoped_ptr<proof_saver>     m_saver;
     scoped_ptr<proof_trim>      m_trimmer;
@@ -352,9 +362,12 @@ public:
         solver_params sp(p);
         m_save  = sp.proof_save();        
         m_trim  = sp.proof_trim();
+        m_replay = sp.proof_replay();
         m_check = sp.proof_check() && !m_trim && !m_save && !m_on_clause_eh;
-        if (m_trim)
+        if (m_trim) {
             trim().updt_params(p);
+            trim().set_replay(m_replay);
+        }
     }
 
     void register_on_clause(void* ctx, user_propagator::on_clause_eh_t& on_clause_eh) override {
