@@ -1,3 +1,4 @@
+
 /*++
 Copyright (c) 2006 Microsoft Corporation
 
@@ -41,18 +42,12 @@ Revision History:
 // -----------------------------------
 
 parameter::~parameter() {
-    if (auto p = std::get_if<rational*>(&m_val)) {
-        dealloc(*p);
-    }
     if (auto p = std::get_if<zstring*>(&m_val)) {
         dealloc(*p);
     }
 }
 
 parameter::parameter(parameter const& other) : m_val(other.m_val) {
-    if (auto p = std::get_if<rational*>(&m_val)) {
-        m_val = alloc(rational, **p);
-    }
     if (auto p = std::get_if<zstring*>(&m_val)) {
         m_val = alloc(zstring, **p);
     }
@@ -1675,7 +1670,7 @@ bool ast_manager::slow_not_contains(ast const * n) {
 }
 #endif
 
-#if 0
+#if 1
 static unsigned s_count = 0;
 
 static void track_id(ast_manager& m, ast* n, unsigned id) {
@@ -1714,9 +1709,8 @@ ast * ast_manager::register_node_core(ast * n) {
 
     n->m_id = is_decl(n) ? m_decl_id_gen.mk() : m_expr_id_gen.mk();        
 
-  //  track_id(*this, n, 9213);
-    
-//    TRACE(ast, tout << (s_count++) << " Object " << n->m_id << " was created.\n";);
+
+        //    TRACE(ast, tout << (s_count++) << " Object " << n->m_id << " was created.\n";);
     TRACE(mk_var_bug, tout << "mk_ast: " << n->m_id << "\n";);
     // increment reference counters
     switch (n->get_kind()) {
@@ -1914,7 +1908,7 @@ app * ast_manager::mk_app(family_id fid, decl_kind k, unsigned num_args, expr * 
 }
 
 app * ast_manager::mk_app(family_id fid, decl_kind k, std::span<expr* const> args) {
-    return mk_app(fid, k, 0, nullptr, args.size(), args.data());
+    return mk_app(fid, k, 0, nullptr, static_cast<unsigned>(args.size()), args.data());
 }
 
 app * ast_manager::mk_app(family_id fid, decl_kind k, expr * arg) {
@@ -2592,6 +2586,15 @@ quantifier * ast_manager::update_quantifier(quantifier * q, quantifier_kind k, u
                          patterns,
                          num_patterns == 0 ? q->get_num_no_patterns() : 0,
                          num_patterns == 0 ? q->get_no_patterns() : nullptr);
+}
+
+quantifier * ast_manager::update_quantifier(quantifier * q, std::initializer_list<expr*> patterns, expr * body) {
+    return update_quantifier(q, static_cast<unsigned>(patterns.size()), patterns.begin(), body);
+}
+
+quantifier * ast_manager::update_quantifier(quantifier * q, std::initializer_list<expr*> patterns, std::initializer_list<expr*> no_patterns, expr * body) {
+    return update_quantifier(q, static_cast<unsigned>(patterns.size()), patterns.begin(), 
+                           static_cast<unsigned>(no_patterns.size()), no_patterns.begin(), body);
 }
 
 app * ast_manager::mk_distinct(unsigned num_args, expr * const * args) {
@@ -3340,15 +3343,14 @@ proof * ast_manager::mk_th_lemma(
     if (proofs_disabled())
         return nullptr;
 
-    ptr_buffer<expr> args;
     vector<parameter> parameters;
     parameters.push_back(parameter(get_family_name(tid)));
-    for (unsigned i = 0; i < num_params; ++i) {
-        parameters.push_back(params[i]);
-    }
+    for (unsigned i = 0; i < num_params; ++i) 
+        parameters.push_back(params[i]);        
+    ptr_buffer<expr> args;
     args.append(num_proofs, (expr**) proofs);
     args.push_back(fact);
-    return mk_app(basic_family_id, PR_TH_LEMMA, num_params+1, parameters.data(), args.size(), args.data());
+    return mk_app(basic_family_id, PR_TH_LEMMA, parameters.size(), parameters.data(), args.size(), args.data());
 }
 
 proof* ast_manager::mk_hyper_resolve(unsigned num_premises, proof* const* premises, expr* concl,

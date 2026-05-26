@@ -16,21 +16,22 @@ tools:
     toolsets: [default]
   bash: [":*"]
   edit: {}
-  glob: {}
-  view: {}
 
 safe-outputs:
   create-discussion:
     title-prefix: "[Release Notes] "
     category: "Announcements"
     close-older-discussions: false
+  noop:
+    report-as-issue: false
   github-token: ${{ secrets.GITHUB_TOKEN }}
 
 steps:
   - name: Checkout repository
-    uses: actions/checkout@v5
+    uses: actions/checkout@v6.0.2
     with:
       fetch-depth: 0  # Fetch full history for analyzing commits
+      persist-credentials: false
 
 ---
 

@@ -54,6 +54,7 @@ namespace datalog {
                 col = column_idx(orig[i]);
                 limit = col + column_num_bits(orig[i]);
             } else {
+                SASSERT(other);
                 unsigned idx = orig[i] - get_num_cols();
                 col = get_num_bits() + other->column_idx(idx);
                 limit = col + other->column_num_bits(idx);
@@ -282,7 +283,6 @@ namespace datalog {
         return false;
     }
     unsigned udoc_plugin::num_sort_bits(sort* s) const {
-        unsigned num_bits = 0;
         if (bv.is_bv_sort(s))
             return bv.get_bv_size(s);
         if (m.is_bool(s)) 

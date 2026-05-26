@@ -474,6 +474,88 @@ public class Context implements AutoCloseable {
     }
 
     /**
+     * Create a type variable for use in polymorphic functions and datatypes.
+     * Type variables can be used as sort parameters in polymorphic datatypes.
+     * @param name name of the type variable
+     * @return a new type variable sort
+     **/
+    public TypeVarSort mkTypeVariable(Symbol name)
+    {
+        checkContextMatch(name);
+        return new TypeVarSort(this, name);
+    }
+
+    /**
+     * Create a type variable for use in polymorphic functions and datatypes.
+     * Type variables can be used as sort parameters in polymorphic datatypes.
+     * @param name name of the type variable
+     * @return a new type variable sort
+     **/
+    public TypeVarSort mkTypeVariable(String name)
+    {
+        return mkTypeVariable(mkSymbol(name));
+    }
+
+    /**
+     * Create a polymorphic (parametric) datatype sort.
+     * A polymorphic datatype is parameterized by type variables, allowing it to
+     * work with different types. This is similar to generic types in programming languages.
+     * 
+     * @param name name of the datatype sort
+     * @param parameters array of type variable sorts to parameterize the datatype
+     * @param constructors array of constructor specifications
+     * @return a new polymorphic datatype sort
+     * 
+     * Example:
+     * <pre>
+     * // Create a polymorphic List datatype: List[T]
+     * TypeVarSort T = ctx.mkTypeVariable("T");
+     * Constructor&lt;Object&gt; nil = ctx.mkConstructor("nil", "is_nil", null, null, null);
+     * Constructor&lt;Object&gt; cons = ctx.mkConstructor("cons", "is_cons",
+     *     new String[]{"head", "tail"},
+     *     new Sort[]{T, null}, // head has type T, tail is recursive reference
+     *     new int[]{0, 0}); // sortRef 0 refers back to List[T]
+     * DatatypeSort&lt;Object&gt; listSort = ctx.mkPolymorphicDatatypeSort("List",
+     *     new Sort[]{T}, new Constructor[]{nil, cons});
+     * </pre>
+     **/
+    public <R> DatatypeSort<R> mkPolymorphicDatatypeSort(Symbol name, Sort[] parameters, Constructor<R>[] constructors)
+    {
+        checkContextMatch(name);
+        checkContextMatch(parameters);
+        checkContextMatch(constructors);
+        
+        int numParams = parameters.length;
+        long[] paramsNative = AST.arrayToNative(parameters);
+        
+        int numConstructors = constructors.length;
+        long[] constructorsNative = new long[numConstructors];
+        for (int i = 0; i < numConstructors; i++) {
+            constructorsNative[i] = constructors[i].getNativeObject();
+        }
+        
+        long nativeSort = Native.mkPolymorphicDatatype(nCtx(), name.getNativeObject(),
+                numParams, paramsNative, numConstructors, constructorsNative);
+        
+        return new DatatypeSort<>(this, nativeSort);
+    }
+
+    /**
+     * Create a polymorphic (parametric) datatype sort.
+     * A polymorphic datatype is parameterized by type variables, allowing it to
+     * work with different types. This is similar to generic types in programming languages.
+     * 
+     * @param name name of the datatype sort
+     * @param parameters array of type variable sorts to parameterize the datatype
+     * @param constructors array of constructor specifications
+     * @return a new polymorphic datatype sort
+     **/
+    public <R> DatatypeSort<R> mkPolymorphicDatatypeSort(String name, Sort[] parameters, Constructor<R>[] constructors)
+    {
+        return mkPolymorphicDatatypeSort(mkSymbol(name), parameters, constructors);
+    }
+
+    /**
      * Update a datatype field at expression t with value v.
      * The function performs a record update at t. The field
      * that is passed in as argument is updated with value v,
@@ -1068,6 +1150,27 @@ public class Context implements AutoCloseable {
     {
         checkContextMatch(t);
         return new BoolExpr(this, Native.mkIsInt(nCtx(), t.getNativeObject()));
+    }
+
+    /**
+     * Creates the absolute value of an arithmetic expression.
+     * Remarks: The argument must have integer or real sort.
+     **/
+    public <R extends ArithSort> ArithExpr<R> mkAbs(Expr<? extends R> arg)
+    {
+        checkContextMatch(arg);
+        return (ArithExpr<R>) Expr.create(this, Native.mkAbs(nCtx(), arg.getNativeObject()));
+    }
+
+    /**
+     * Creates an integer divisibility predicate (t1 divides t2).
+     * Remarks: Both arguments must have integer sort.
+     **/
+    public BoolExpr mkDivides(Expr<IntSort> t1, Expr<IntSort> t2)
+    {
+        checkContextMatch(t1);
+        checkContextMatch(t2);
+        return new BoolExpr(this, Native.mkDivides(nCtx(), t1.getNativeObject(), t2.getNativeObject()));
     }
 
     /**
@@ -1918,6 +2021,19 @@ public class Context implements AutoCloseable {
     }
 
     /**
+     * Create an as-array expression from a function declaration.
+     * @param f the function declaration to lift into an array.
+     *          Must have exactly one domain sort.
+     * @see #mkTermArray(Expr)
+     * @see #mkMap(FuncDecl, Expr[])
+     **/
+    public final <D extends Sort, R extends Sort> ArrayExpr<D, R> mkAsArray(FuncDecl<R> f)
+    {
+        checkContextMatch(f);
+        return (ArrayExpr<D, R>) Expr.create(this, Native.mkAsArray(nCtx(), f.getNativeObject()));
+    }
+
+    /**
      * Create Extentionality index. Two arrays are equal if and only if they are equal on the index returned by MkArrayExt.
      **/
     public final <D extends Sort, R extends Sort> Expr<D> mkArrayExt(Expr<ArraySort<D, R>> arg1, Expr<ArraySort<D, R>> arg2)
@@ -2049,6 +2165,145 @@ public class Context implements AutoCloseable {
         return (BoolExpr) Expr.create(this,
                 Native.mkSetSubset(nCtx(), arg1.getNativeObject(),
                         arg2.getNativeObject()));
+    }
+
+
+    /**
+     * Finite Sets
+     */
+
+    /**
+     * Create a finite set sort over the given element sort.
+     **/
+    public final FiniteSetSort mkFiniteSetSort(Sort elemSort)
+    {
+        checkContextMatch(elemSort);
+        return new FiniteSetSort(this, elemSort);
+    }
+
+    /**
+     * Check if a sort is a finite set sort.
+     **/
+    public final boolean isFiniteSetSort(Sort s)
+    {
+        checkContextMatch(s);
+        return Native.isFiniteSetSort(nCtx(), s.getNativeObject());
+    }
+
+    /**
+     * Get the element sort (basis) of a finite set sort.
+     **/
+    public final Sort getFiniteSetSortBasis(Sort s)
+    {
+        checkContextMatch(s);
+        return Sort.create(this, Native.getFiniteSetSortBasis(nCtx(), s.getNativeObject()));
+    }
+
+    /**
+     * Create an empty finite set.
+     **/
+    public final Expr mkFiniteSetEmpty(Sort setSort)
+    {
+        checkContextMatch(setSort);
+        return Expr.create(this, Native.mkFiniteSetEmpty(nCtx(), setSort.getNativeObject()));
+    }
+
+    /**
+     * Create a singleton finite set.
+     **/
+    public final Expr mkFiniteSetSingleton(Expr elem)
+    {
+        checkContextMatch(elem);
+        return Expr.create(this, Native.mkFiniteSetSingleton(nCtx(), elem.getNativeObject()));
+    }
+
+    /**
+     * Create the union of two finite sets.
+     **/
+    public final Expr mkFiniteSetUnion(Expr s1, Expr s2)
+    {
+        checkContextMatch(s1);
+        checkContextMatch(s2);
+        return Expr.create(this, Native.mkFiniteSetUnion(nCtx(), s1.getNativeObject(), s2.getNativeObject()));
+    }
+
+    /**
+     * Create the intersection of two finite sets.
+     **/
+    public final Expr mkFiniteSetIntersect(Expr s1, Expr s2)
+    {
+        checkContextMatch(s1);
+        checkContextMatch(s2);
+        return Expr.create(this, Native.mkFiniteSetIntersect(nCtx(), s1.getNativeObject(), s2.getNativeObject()));
+    }
+
+    /**
+     * Create the difference of two finite sets.
+     **/
+    public final Expr mkFiniteSetDifference(Expr s1, Expr s2)
+    {
+        checkContextMatch(s1);
+        checkContextMatch(s2);
+        return Expr.create(this, Native.mkFiniteSetDifference(nCtx(), s1.getNativeObject(), s2.getNativeObject()));
+    }
+
+    /**
+     * Check for membership in a finite set.
+     **/
+    public final BoolExpr mkFiniteSetMember(Expr elem, Expr set)
+    {
+        checkContextMatch(elem);
+        checkContextMatch(set);
+        return (BoolExpr) Expr.create(this, Native.mkFiniteSetMember(nCtx(), elem.getNativeObject(), set.getNativeObject()));
+    }
+
+    /**
+     * Get the cardinality of a finite set.
+     **/
+    public final Expr mkFiniteSetSize(Expr set)
+    {
+        checkContextMatch(set);
+        return Expr.create(this, Native.mkFiniteSetSize(nCtx(), set.getNativeObject()));
+    }
+
+    /**
+     * Check if one finite set is a subset of another.
+     **/
+    public final BoolExpr mkFiniteSetSubset(Expr s1, Expr s2)
+    {
+        checkContextMatch(s1);
+        checkContextMatch(s2);
+        return (BoolExpr) Expr.create(this, Native.mkFiniteSetSubset(nCtx(), s1.getNativeObject(), s2.getNativeObject()));
+    }
+
+    /**
+     * Map a function over all elements in a finite set.
+     **/
+    public final Expr mkFiniteSetMap(Expr f, Expr set)
+    {
+        checkContextMatch(f);
+        checkContextMatch(set);
+        return Expr.create(this, Native.mkFiniteSetMap(nCtx(), f.getNativeObject(), set.getNativeObject()));
+    }
+
+    /**
+     * Filter a finite set with a predicate.
+     **/
+    public final Expr mkFiniteSetFilter(Expr f, Expr set)
+    {
+        checkContextMatch(f);
+        checkContextMatch(set);
+        return Expr.create(this, Native.mkFiniteSetFilter(nCtx(), f.getNativeObject(), set.getNativeObject()));
+    }
+
+    /**
+     * Create a finite set containing integers in the range [low, high].
+     **/
+    public final Expr mkFiniteSetRange(Expr low, Expr high)
+    {
+        checkContextMatch(low);
+        checkContextMatch(high);
+        return Expr.create(this, Native.mkFiniteSetRange(nCtx(), low.getNativeObject(), high.getNativeObject()));
     }
 
 
@@ -4357,6 +4612,38 @@ public class Context implements AutoCloseable {
                 Native.mkTransitiveClosure(
                     nCtx(),
                     f.getNativeObject()
+                )
+        );
+    }
+
+    /**
+     * Creates a piecewise linear order.
+     * @param index The index of the order.
+     * @param sort The sort of the order.
+     */
+    public final <R extends Sort> FuncDecl<BoolSort> mkPiecewiseLinearOrder(R sort, int index) {
+        return (FuncDecl<BoolSort>) FuncDecl.create(
+                this,
+                Native.mkPiecewiseLinearOrder(
+                    nCtx(),
+                    sort.getNativeObject(),
+                    index
+                )
+        );
+    }
+
+    /**
+     * Creates a tree order.
+     * @param index The index of the order.
+     * @param sort The sort of the order.
+     */
+    public final <R extends Sort> FuncDecl<BoolSort> mkTreeOrder(R sort, int index) {
+        return (FuncDecl<BoolSort>) FuncDecl.create(
+                this,
+                Native.mkTreeOrder(
+                    nCtx(),
+                    sort.getNativeObject(),
+                    index
                 )
         );
     }

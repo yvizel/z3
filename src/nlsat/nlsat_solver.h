@@ -194,6 +194,7 @@ namespace nlsat {
         assumption join(assumption a, assumption b);
 
         void inc_simplify();
+        void record_levelwise_result(bool success);
         void add_bound(bound_constraint const& c);
 
         /**
@@ -217,6 +218,19 @@ namespace nlsat {
         lbool check();
 
         lbool check(literal_vector& assumptions);
+
+        //
+        // check satisfiability of asserted formulas relative to state of the nlsat solver.
+        // produce either,
+        // l_true - a model is available (rvalues can be ignored) or,
+        // l_false - a clause (not core v not cell) excluding a cell around rvalues if core (consisting of atoms
+        // passed to nlsat) is asserted.
+        // l_undef - if the search was interrupted by a resource limit.
+        // clause is a list of literals. Their disjunction is valid.
+        // Different implementations of check are possible. One where cell comprises of linear polynomials could
+        // produce lemmas that are friendly to linear arithmetic solvers.
+        //
+        lbool check(assignment const& rvalues, literal_vector& clause);
 
         // -----------------------
         //
@@ -244,7 +258,12 @@ namespace nlsat {
         // -----------------------
         void updt_params(params_ref const & p);
         static void collect_param_descrs(param_descrs & d);
-
+        const assignment& sample() const;
+        assignment& sample(); 
+        bool apply_levelwise() const;
+        unsigned lws_spt_threshold() const;
+        bool lws_witness_subs_lc() const;
+        bool lws_witness_subs_disc() const;
         void reset();
         void collect_statistics(statistics & st);
         void reset_statistics();
@@ -294,8 +313,7 @@ namespace nlsat {
         std::ostream& display_assignment(std::ostream& out) const;
 
         std::ostream& display_var(std::ostream& out, unsigned j) const;
-        
+
     };
 
 };
-

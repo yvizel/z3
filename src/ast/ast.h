@@ -49,6 +49,7 @@ Revision History:
 #include "util/rlimit.h"
 #include <variant>
 #include <span>
+#include <initializer_list>
 
 #define RECYCLE_FREE_AST_INDICES
 
@@ -123,20 +124,20 @@ private:
         ast*,      // for PARAM_AST
         symbol,    // for PARAM_SYMBOL
         zstring*,  // for PARAM_ZSTRING
-        rational*, // for PARAM_RATIONAL
+        rational,  // for PARAM_RATIONAL
         double,    // for PARAM_DOUBLE (remark: this is not used in float_decl_plugin)
         unsigned   // for PARAM_EXTERNAL
-    > m_val;
+    > m_val = 0;
 
 public:
 
-    parameter() : m_val(0) {}
+    parameter() noexcept = default;
     explicit parameter(int val): m_val(val) {}
     explicit parameter(unsigned val): m_val((int)val) {}
     explicit parameter(ast * p): m_val(p) {}
     explicit parameter(symbol const & s): m_val(s) {}
-    explicit parameter(rational const & r): m_val(alloc(rational, r)) {}
-    explicit parameter(rational && r) : m_val(alloc(rational, std::move(r))) {} 
+    explicit parameter(rational const & r): m_val(r) {}
+    explicit parameter(rational && r) : m_val(std::move(r)) {} 
     explicit parameter(zstring const& s): m_val(alloc(zstring, s)) {}
     explicit parameter(zstring && s): m_val(alloc(zstring, std::move(s))) {}
     explicit parameter(double d): m_val(d) {}
@@ -188,7 +189,7 @@ public:
     int get_int() const { SASSERT(is_int()); return std::get<int>(m_val); }
     ast * get_ast() const { SASSERT(is_ast()); return std::get<ast*>(m_val); }
     symbol get_symbol() const { SASSERT(is_symbol()); return std::get<symbol>(m_val); }
-    rational const & get_rational() const { SASSERT(is_rational()); return *std::get<rational*>(m_val); }
+    rational const & get_rational() const { SASSERT(is_rational()); return std::get<rational>(m_val); }
     zstring const& get_zstring() const { SASSERT(is_zstring()); return *std::get<zstring*>(m_val); }
     double get_double() const { SASSERT(is_double()); return std::get<double>(m_val); }
     unsigned get_ext_id() const { SASSERT(is_external()); return std::get<unsigned>(m_val); }
@@ -315,12 +316,12 @@ class sort_size {
         // of elements is at least bigger than 2^64.
         SS_FINITE_VERY_BIG,
         SS_INFINITE
-    } m_kind;
-    uint64_t m_size; // It is only meaningful if m_kind == SS_FINITE
+    } m_kind = SS_INFINITE;
+    uint64_t m_size = 0; // It is only meaningful if m_kind == SS_FINITE
     sort_size(kind_t k, uint64_t r):m_kind(k), m_size(r) {}
 public:
-    sort_size():m_kind(SS_INFINITE), m_size(0) {}
-    sort_size(uint64_t const & sz):m_kind(SS_FINITE), m_size(sz) {}
+    sort_size() = default;
+    sort_size(uint64_t sz):m_kind(SS_FINITE), m_size(sz) {}
     explicit sort_size(rational const& r) {
         if (r.is_uint64()) {
             m_kind = SS_FINITE;
@@ -2071,6 +2072,12 @@ public:
 
     quantifier * update_quantifier(quantifier * q, quantifier_kind new_kind, unsigned new_num_patterns, expr * const * new_patterns, expr * new_body);
 
+    // Convenience overloads with std::initializer_list
+    [[nodiscard]] quantifier * update_quantifier(quantifier * q, std::initializer_list<expr*> new_patterns, expr * new_body);
+    
+    [[nodiscard]] quantifier * update_quantifier(quantifier * q, std::initializer_list<expr*> new_patterns, std::initializer_list<expr*> new_no_patterns, expr * new_body);
+
+
 // -----------------------------------
 //
 // expr_array
@@ -2206,6 +2213,7 @@ public:
     app * mk_xor(ref_buffer<expr, ast_manager> const& args) { return mk_xor(args.size(), args.data()); }
     app * mk_or(unsigned num_args, expr * const * args) { return mk_app(basic_family_id, OP_OR, num_args, args); }
     app * mk_and(std::span<expr* const> args) { return mk_app(basic_family_id, OP_AND, args); }
+    app * mk_or(std::span<expr* const> args) { return mk_app(basic_family_id, OP_OR, args); }
     app * mk_or(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_OR, arg1, arg2); }
     app * mk_and(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_AND, arg1, arg2); }
     app * mk_or(expr * arg1, expr * arg2, expr * arg3) { return mk_app(basic_family_id, OP_OR, arg1, arg2, arg3); }
@@ -2216,10 +2224,10 @@ public:
     app * mk_and(ptr_vector<expr> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
     app * mk_and(ref_buffer<expr, ast_manager> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
     app * mk_and(ptr_buffer<expr> const& args) { return mk_and(std::span<expr* const>(args.data(), args.size())); }
-    app * mk_or(ref_vector<expr, ast_manager> const& args) { return mk_or(args.size(), args.data()); }
-    app * mk_or(ptr_vector<expr> const& args) { return mk_or(args.size(), args.data()); }
-    app * mk_or(ref_buffer<expr, ast_manager> const& args) { return mk_or(args.size(), args.data()); }
-    app * mk_or(ptr_buffer<expr> const& args) { return mk_or(args.size(), args.data()); }
+    app * mk_or(ref_vector<expr, ast_manager> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
+    app * mk_or(ptr_vector<expr> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
+    app * mk_or(ref_buffer<expr, ast_manager> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
+    app * mk_or(ptr_buffer<expr> const& args) { return mk_or(std::span<expr* const>(args.data(), args.size())); }
     app * mk_implies(expr * arg1, expr * arg2) { return mk_app(basic_family_id, OP_IMPLIES, arg1, arg2); }
     app * mk_not(expr * n) { return mk_app(basic_family_id, OP_NOT, n); }
     app * mk_distinct(unsigned num_args, expr * const * args);
@@ -2360,6 +2368,12 @@ public:
     proof * mk_transitivity(proof * p1, proof * p2, proof * p3, proof * p4);
     proof * mk_transitivity(unsigned num_proofs, proof * const * proofs);
     proof * mk_transitivity(unsigned num_proofs, proof * const * proofs, expr * n1, expr * n2);
+    proof * mk_transitivity(std::initializer_list<proof*> const& proofs) {
+        return mk_transitivity(static_cast<unsigned>(proofs.size()), proofs.begin());
+    }
+    proof * mk_transitivity(std::initializer_list<proof*> const& proofs, expr * n1, expr * n2) {
+        return mk_transitivity(static_cast<unsigned>(proofs.size()), proofs.begin(), n1, n2);
+    }
     proof * mk_monotonicity(func_decl * R, app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
     proof * mk_congruence(app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
     proof * mk_oeq_congruence(app * f1, app * f2, unsigned num_proofs, proof * const * proofs);
@@ -2390,6 +2404,12 @@ public:
     proof * mk_def_axiom(expr * ax);
     proof * mk_unit_resolution(unsigned num_proofs, proof * const * proofs);
     proof * mk_unit_resolution(unsigned num_proofs, proof * const * proofs, expr * new_fact);
+    proof * mk_unit_resolution(std::initializer_list<proof*> const& proofs) {
+        return mk_unit_resolution(static_cast<unsigned>(proofs.size()), proofs.begin());
+    }
+    proof * mk_unit_resolution(std::initializer_list<proof*> const& proofs, expr * new_fact) {
+        return mk_unit_resolution(static_cast<unsigned>(proofs.size()), proofs.begin(), new_fact);
+    }
     proof * mk_hypothesis(expr * h);
     proof * mk_lemma(proof * p, expr * lemma);
 

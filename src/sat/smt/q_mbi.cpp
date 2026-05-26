@@ -430,7 +430,7 @@ namespace q {
             expr_ref meq = mk_or(meqs);
             expr_ref veq = mk_or(veqs);
             assert_expr(meq);
-            qb.domain_eqs.push_back(veq);
+            qb.domain_eqs.push_back(std::move(veq));
         }
     }
 
@@ -499,8 +499,12 @@ namespace q {
                 IF_VERBOSE(0,
                     verbose_stream() << mk_pp(s, m) << " := " << (*m_model)(s) << "\n";
                 verbose_stream() << term << " := " << (*m_model)(term) << "\n";
-                verbose_stream() << value << " -> " << (*m_model)(ctx.values2root()[(*m_model)(term)]->get_expr()) << "\n";
-                verbose_stream() << (*m_model)(s) << " -> " << (*m_model)(ctx.values2root()[(*m_model)(s)]->get_expr()) << "\n";
+                euf::enode* nr = nullptr;
+                auto const& v2r = ctx.values2root();
+                if (v2r.find((*m_model)(term), nr))
+                    verbose_stream() << value << " -> " << (*m_model)(nr->get_expr()) << "\n";
+                if (v2r.find((*m_model)(s), nr))
+                    verbose_stream() << (*m_model)(s) << " -> " << (*m_model)(nr->get_expr()) << "\n";
                 verbose_stream() << *m_model << "\n";);
             }
             eqs.push_back(eq);

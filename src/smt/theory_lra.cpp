@@ -155,6 +155,7 @@ class theory_lra::imp {
     ptr_vector<expr>       m_not_handled;
     ptr_vector<app>        m_underspecified;
     ptr_vector<app>        m_bv_terms;
+    ptr_vector<expr>       m_mul_defs; // fresh multiplication definition vars
     vector<ptr_vector<api_bound> > m_use_list;        // bounds where variables are used.
 
     // attributes for incremental version:
@@ -267,7 +268,23 @@ class theory_lra::imp {
             };
             m_nla->set_relevant(is_relevant);
             m_nla->updt_params(ctx().get_params());
+            m_nla->get_core().set_add_mul_def_hook([&](unsigned sz, lpvar const* vs) { return add_mul_def(sz, vs); });
         }
+    }
+
+    lpvar add_mul_def(unsigned sz, lpvar const* vs) {
+        bool is_int = true;
+        for (unsigned i = 0; i < sz; ++i) {
+            theory_var tv = lp().local_to_external(vs[i]);
+            is_int &= this->is_int(tv);
+        }
+        sort* srt = is_int ? a.mk_int() : a.mk_real();
+        app_ref c(m.mk_fresh_const("mul!", srt), m);
+        mk_enode(c);
+        theory_var v = mk_var(c);
+        ctx().push_trail(push_back_vector<ptr_vector<expr>>(m_mul_defs));
+        m_mul_defs.push_back(c);
+        return register_theory_var_in_lar_solver(v);
     }
 
     void found_unsupported(expr* n) {
@@ -401,9 +418,9 @@ class theory_lra::imp {
                     theory_var w = mk_var(n1);
                     lpvar vj = register_theory_var_in_lar_solver(v);
                     lpvar wj = register_theory_var_in_lar_solver(w);
-                    auto lu_constraints = lp().add_equality(vj, wj);
-                    add_def_constraint(lu_constraints.first);
-                    add_def_constraint(lu_constraints.second);
+                    auto [lower_ci, upper_ci] = lp().add_equality(vj, wj);
+                    add_def_constraint(lower_ci);
+                    add_def_constraint(upper_ci);
                 }
             }
             else if (is_app(n) && a.get_family_id() == to_app(n)->get_family_id()) {
@@ -432,25 +449,42 @@ class theory_lra::imp {
                         internalize_term(to_app(n));
                         internalize_term(to_app(n1));
                         internalize_term(to_app(n2));
+                        internalize_term(to_app(mod));
                         theory_var q = mk_var(n);
                         theory_var x = mk_var(n1);
                         theory_var y = mk_var(n2);
-                        m_nla->add_idivision(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y));
+                        theory_var rv = mk_var(mod);
+                        m_nla->add_idivision(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y), register_theory_var_in_lar_solver(rv));
                     }
                     if (a.is_numeral(n2) && a.is_bounded(n1)) {
                         ensure_nla();
                         internalize_term(to_app(n));
                         internalize_term(to_app(n1));
                         internalize_term(to_app(n2));
+                        internalize_term(to_app(mod));
                         theory_var q = mk_var(n);
                         theory_var x = mk_var(n1);
                         theory_var y = mk_var(n2);
-                        m_nla->add_bounded_division(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y));
+                        theory_var rv = mk_var(mod);
+                        m_nla->add_bounded_division(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y), register_theory_var_in_lar_solver(rv));
                     }
                 }
                 else if (a.is_mod(n, n1, n2)) {
                     if (!a.is_numeral(n2, r) || r.is_zero()) found_underspecified(n);
-                    if (!ctx().relevancy()) mk_idiv_mod_axioms(n1, n2);    
+                    if (!ctx().relevancy()) mk_idiv_mod_axioms(n1, n2);
+                    if (m_nla && a.is_numeral(n2) && !r.is_zero()) {
+                        app_ref div(a.mk_idiv(n1, n2), m);
+                        ctx().internalize(div, false);
+                        internalize_term(to_app(div));
+                        internalize_term(to_app(n1));
+                        internalize_term(to_app(n2));
+                        internalize_term(t);
+                        theory_var q = mk_var(div);
+                        theory_var x = mk_var(n1);
+                        theory_var y = mk_var(n2);
+                        theory_var rv = mk_var(n);
+                        m_nla->add_bounded_division(register_theory_var_in_lar_solver(q), register_theory_var_in_lar_solver(x), register_theory_var_in_lar_solver(y), register_theory_var_in_lar_solver(rv));
+                    }
                 }
                 else if (a.is_rem(n, n1, n2)) {
                     if (!a.is_numeral(n2, r) || r.is_zero()) found_underspecified(n);
@@ -870,15 +904,10 @@ public:
         get_zero(true);
         get_zero(false);
 
+
         lp().updt_params(ctx().get_params());
         lp().settings().set_resource_limit(m_resource_limit);
         lp().settings().bound_propagation() = bound_prop_mode::BP_NONE != propagation_mode();
-
-        // todo : do not use m_arith_branch_cut_ratio for deciding on cheap cuts
-        unsigned branch_cut_ratio = ctx().get_fparams().m_arith_branch_cut_ratio;
-        lp().set_cut_strategy(branch_cut_ratio);
-        
-        lp().settings().set_run_gcd_test(ctx().get_fparams().m_arith_gcd_test);
         lp().settings().set_random_seed(ctx().get_fparams().m_random_seed);
         m_lia = alloc(lp::int_solver, *m_solver.get());
     }
@@ -889,6 +918,9 @@ public:
         if (!ctx().relevancy())
             mk_is_int_axiom(n);        
     }
+
+    ptr_vector<expr> m_delay_ineqs;
+    unsigned m_delay_ineqs_qhead = 0;
 
     bool internalize_atom(app * atom, bool gate_ctx) {
         TRACE(arith_internalize, tout << bpp(atom) << "\n";);
@@ -918,6 +950,11 @@ public:
         }
         else if (a.is_is_int(atom)) {
             internalize_is_int(atom);
+            return true;
+        }
+        else if (a.is_le(atom) || a.is_ge(atom)) {
+            m_delay_ineqs.push_back(atom);   
+            ctx().push_trail(push_back_vector<ptr_vector<expr>>(m_delay_ineqs));
             return true;
         }
         else {
@@ -1629,6 +1666,61 @@ public:
             return FC_DONE;
         return FC_GIVEUP;
     }
+
+    /**
+    * Check if a set of equalities are lp feasible.
+    * push local scope
+    * internalize ineqs
+    * assert ineq constraints
+    * check lp feasibility
+    * extract core
+    * pop local scope
+    * return verdict
+    */
+
+    lbool check_lp_feasible(vector<std::pair<bool, expr_ref>> &ineqs, literal_vector& lit_core, enode_pair_vector& eq_core) {
+        lbool st = l_undef;
+        push_scope_eh(); // pushes an arithmetic scope
+        u_map<unsigned> ci2index;
+        unsigned index = 0;        
+        for (auto &[in_core, f] : ineqs) {
+            expr *x, *y;
+            rational r;
+            in_core = false;
+            if (m.is_eq(f, x, y) && a.is_numeral(y, r)) {
+                internalize_term(to_app(x));                
+                auto j = get_lpvar(th.get_th_var(x));
+                auto ci = lp().add_var_bound(j, lp::EQ, r);
+                ci2index.insert(ci, index);
+                lp().activate(ci);
+                if (is_infeasible()) {
+                    st = l_false;
+                    break;
+                }
+            }
+            else {
+                NOT_IMPLEMENTED_YET();
+            }
+            ++index;
+        }
+        if (st != l_false) {
+            st = make_feasible();
+            SASSERT(st != l_false || is_infeasible());
+        }
+        if (st == l_false) {
+            m_explanation.clear();
+            lp().get_infeasibility_explanation(m_explanation);
+            for (auto ev : m_explanation) {
+                unsigned index;
+                if (ci2index.find(ev.ci(), index)) 
+                    ineqs[index].first = true;   
+                else
+                    set_evidence(ev.ci(), lit_core, eq_core);
+            }
+        }
+        pop_scope_eh(1);
+        return st;
+    }
     
     final_check_status final_check_eh(unsigned level) {
         if (propagate_core())
@@ -1857,8 +1949,8 @@ public:
         expr_ref fml(m);
         expr_ref_vector ts(m);
         rational rhs = c.rhs();
-        for (auto cv : c.coeffs()) {
-            ts.push_back(multerm(cv.first, var2expr(cv.second)));
+        for (auto [coeff, var] : c.coeffs()) {
+            ts.push_back(multerm(coeff, var2expr(var)));
         }
         switch (c.kind()) {
         case lp::LE: fml = a.mk_le(a.mk_add(ts.size(), ts.data()), a.mk_numeral(rhs, true)); break;
@@ -2034,6 +2126,14 @@ public:
         m_explanation = l.expl();
         literal_vector core;
         SASSERT(!m_lemma.is_empty());
+        TRACE(nla_solver,
+            tout << "varmap:";
+            for (lpvar j : m_nla->get_core().collect_vars(l)) {
+                auto ext = lp().local_to_external(j);
+                if (ext != lp::null_lpvar && static_cast<unsigned>(ext) < th.get_num_vars())
+                    tout << " " << lp().get_variable_name(j) << "=" << pp(ext);
+            }
+            tout << "\n";);
         for (auto const& ineq : m_lemma.ineqs()) {
             auto lit = mk_literal(ineq);
             core.push_back(~lit);
@@ -2126,6 +2226,8 @@ public:
         unsigned total_conflicts = ctx().get_num_conflicts();
         if (total_conflicts < 10)
             return true;
+        if (m_delay_ineqs_qhead < m_delay_ineqs.size())
+            return true;
         double f = static_cast<double>(m_num_conflicts)/static_cast<double>(total_conflicts);
         return f >= adaptive_assertion_threshold();
     }
@@ -2135,7 +2237,8 @@ public:
     }
     
     bool can_propagate_core() {
-        return m_asserted_atoms.size() > m_asserted_qhead || m_new_def || lp().has_changed_columns();
+        return m_asserted_atoms.size() > m_asserted_qhead || m_new_def || lp().has_changed_columns() ||
+               m_delay_ineqs_qhead < m_delay_ineqs.size();
     }
 
     bool propagate() {
@@ -2150,6 +2253,29 @@ public:
             return true;
         if (!can_propagate_core()) 
             return false;
+
+        for (; m_delay_ineqs_qhead < m_delay_ineqs.size() && !ctx().inconsistent() && m.inc(); ++m_delay_ineqs_qhead) {
+            auto atom = m_delay_ineqs[m_delay_ineqs_qhead];
+            ctx().push_trail(value_trail(m_delay_ineqs_qhead));
+            if (!ctx().is_relevant(atom))
+                continue;
+            expr *x, *y;
+            if (a.is_le(atom, x, y)) {
+                auto lit1 = mk_literal(atom);
+                auto lit2 = mk_literal(a.mk_le(a.mk_sub(x, y), a.mk_numeral(rational(0), a.is_int(x->get_sort()))));
+                mk_axiom(~lit1, lit2);
+                mk_axiom(lit1, ~lit2);                
+            }
+            else if (a.is_ge(atom, x, y)) {
+                auto lit1 = mk_literal(atom);
+                auto lit2 = mk_literal(a.mk_ge(a.mk_sub(x, y), a.mk_numeral(rational(0), a.is_int(x->get_sort()))));
+                mk_axiom(~lit1, lit2);
+                mk_axiom(lit1, ~lit2);                
+            }
+            else {
+                UNREACHABLE();
+            }
+        }
         
         m_new_def = false;        
         while (m_asserted_qhead < m_asserted_atoms.size() && !ctx().inconsistent() && m.inc()) {
@@ -3246,13 +3372,13 @@ public:
             if (vec.size() <= tv) {
                 vec.resize(tv + 1, constraint_bound(UINT_MAX, rational()));
             }
-            constraint_bound& b = vec[tv];
-            if (b.first == UINT_MAX || (is_lower? b.second < v : b.second > v)) {
+            auto& [ci_ref, bound] = vec[tv];
+            if (ci_ref == UINT_MAX || (is_lower? bound < v : bound > v)) {
                 TRACE(arith, tout << "tighter bound " << tv << "\n";);
                 m_history.push_back(vec[tv]);
                 ctx().push_trail(history_trail<constraint_bound>(vec, tv, m_history));
-                b.first = ci;
-                b.second = v;
+                ci_ref = ci;
+                bound = v;
             }
             return true;
         }
@@ -3366,8 +3492,8 @@ public:
         TRACE(arith,
               for (auto c : m_core) 
                   ctx().display_detailed_literal(tout << ctx().get_assign_level(c.var()) << " " << c << " ", c) << "\n";              
-              for (auto e : m_eqs) 
-                  tout << pp(e.first) << " = " << pp(e.second) << "\n";
+              for (auto [n1, n2] : m_eqs) 
+                  tout << pp(n1) << " = " << pp(n2) << "\n";
               tout << " ==> " << pp(x) << " = " << pp(y) << "\n";
               );
         
@@ -3446,8 +3572,9 @@ public:
             break;
         }
         case equality_source: {
-            SASSERT(m_equalities[idx].first  != nullptr);
-            SASSERT(m_equalities[idx].second != nullptr);
+            [[maybe_unused]] auto [n1, n2] = m_equalities[idx];
+            SASSERT(n1 != nullptr);
+            SASSERT(n2 != nullptr);
             m_eqs.push_back(m_equalities[idx]);          
             break;
         }
@@ -3503,8 +3630,8 @@ public:
                         m_eqs.size(), m_eqs.data(), m_params.size(), m_params.data())));
         }
         else {
-            for (auto const& eq : m_eqs) {
-                m_core.push_back(th.mk_eq(eq.first->get_expr(), eq.second->get_expr(), false));
+            for (auto const& [n1, n2] : m_eqs) {
+                m_core.push_back(th.mk_eq(n1->get_expr(), n2->get_expr(), false));
             }
             for (literal & c : m_core) {
                 c.neg();
@@ -3564,16 +3691,15 @@ public:
 
             m_nla->am().set(r, 0);
             while (!m_todo_terms.empty()) {
-                rational wcoeff = m_todo_terms.back().second;
-                t = m_todo_terms.back().first;                
+                auto [term, wcoeff] = m_todo_terms.back();
                 m_todo_terms.pop_back();
-                lp::lar_term const& term = lp().get_term(t);
-                TRACE(nl_value, lp().print_term(term, tout) << "\n";);
+                lp::lar_term const& term_ref = lp().get_term(term);
+                TRACE(nl_value, lp().print_term(term_ref, tout) << "\n";);
                 scoped_anum r1(m_nla->am());
                 rational c1(0);
                 m_nla->am().set(r1, c1.to_mpq());
                 m_nla->am().add(r, r1, r);                
-                for (lp::lar_term::ival arg : term) {
+                for (lp::lar_term::ival arg : term_ref) {
                     auto wi = arg.j();
                     c1 = arg.coeff() * wcoeff;
                     if (lp().column_has_term(wi)) {
@@ -3889,14 +4015,89 @@ public:
             ctx().literal2expr(c, tmp);
             nctx.assert_expr(tmp);
         }
-        for (auto const& eq : m_eqs) {
-            nctx.assert_expr(m.mk_eq(eq.first->get_expr(), eq.second->get_expr()));
+        for (auto const& [n1, n2] : m_eqs) {
+            nctx.assert_expr(m.mk_eq(n1->get_expr(), n2->get_expr()));
         }
     }        
 
     theory_lra::inf_eps value(theory_var v) {
         lp::impq ival = get_ivalue(v);
         return inf_eps(rational(0), inf_rational(ival.x, ival.y));
+    }
+
+    lp::lp_status max_with_lp(theory_var v, lpvar& vi, lp::impq& term_max) {
+        if (!lp().is_feasible() || lp().has_changed_columns())
+            make_feasible();
+        vi = get_lpvar(v);
+        auto st = lp().maximize_term(vi, term_max);
+        if (has_int() && lp().has_inf_int()) {
+            st = lp::lp_status::FEASIBLE;
+            lp().restore_x();
+        }
+        return st;
+    }
+
+    // Returns true if NLA handled the result (blocker and result are set).
+    // Returns false if maximize should fall through to the normal status switch.
+    bool max_with_nl(theory_var v, lp::lp_status& st, unsigned level, expr_ref& blocker, inf_eps& result) {
+        if (!m_nla || (st != lp::lp_status::OPTIMAL && st != lp::lp_status::UNBOUNDED))
+            return false;
+        // Save the LP optimum before NLA check may restore x.
+        auto lp_val = value(v);
+        auto lp_ival = get_ivalue(v);
+        auto nla_st = check_nla(level);
+        TRACE(opt, tout << "check_nla returned " << nla_st 
+              << " lp_ival=" << lp_ival << "\n";
+              if (nla_st == FC_CONTINUE) {
+                  tout << "LP assignment at maximize optimum:\n";
+                  for (unsigned j = 0; j < lp().column_count(); j++) {
+                      if (!lp().get_column_value(j).is_zero())
+                          tout << "  x[" << j << "] = " << lp().get_column_value(j) << "\n";
+                  }
+              });
+        switch (nla_st) {
+        case FC_DONE:
+            // NLA satisfied: keep the optimal assignment, return LP value
+            blocker = mk_gt(v);
+            result = lp_val;
+            st = lp::lp_status::FEASIBLE;
+            return true;
+        case FC_CONTINUE:
+            // NLA found the LP optimum violates nonlinear constraints.
+            // Restore x but return the LP optimum value and blocker
+            // as a bound for the optimizer to validate via check_bound().
+            lp().restore_x();
+            blocker = mk_gt(v, lp_ival);
+            result = lp_val;
+            st = lp::lp_status::FEASIBLE;
+            return true;
+        case FC_GIVEUP:
+            lp().restore_x();
+            st = lp::lp_status::UNBOUNDED;
+            return false;
+        }
+        UNREACHABLE();
+        return false;
+    }
+
+    theory_lra::inf_eps max_result(theory_var v, lpvar vi, lp::lp_status st, expr_ref& blocker, bool& has_shared) {
+        switch (st) {
+        case lp::lp_status::OPTIMAL:
+            init_variable_values();
+            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
+            blocker = mk_gt(v);
+            return value(v);
+        case lp::lp_status::FEASIBLE:
+            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
+            blocker = mk_gt(v);
+            return value(v);
+        default:
+            SASSERT(st == lp::lp_status::UNBOUNDED);
+            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
+            has_shared = false;
+            blocker = m.mk_false();
+            return inf_eps(rational::one(), inf_rational());
+        }
     }
 
     theory_lra::inf_eps maximize(theory_var v, expr_ref& blocker, bool& has_shared) {
@@ -3915,55 +4116,21 @@ public:
             st = lp::lp_status::UNBOUNDED;
         }
         else {
-            if (!lp().is_feasible() || lp().has_changed_columns())
-                make_feasible();
-            
-            vi = get_lpvar(v);
-            
-            st = lp().maximize_term(vi, term_max);
-
-            if (has_int() && lp().has_inf_int()) {
-                st = lp::lp_status::FEASIBLE;
-                lp().restore_x();
-            }
-            if (m_nla && (st == lp::lp_status::OPTIMAL || st == lp::lp_status::UNBOUNDED)) {
-                switch (check_nla(level)) {
-                case FC_DONE:
-                    st = lp::lp_status::FEASIBLE;
-                    break;
-                case FC_GIVEUP:
-                case FC_CONTINUE:
-                    st = lp::lp_status::UNBOUNDED;
-                    break;
-                }                
-                lp().restore_x();
-            }                
+            st = max_with_lp(v, vi, term_max);
+            inf_eps nl_result;
+            if (max_with_nl(v, st, level, blocker, nl_result))
+                return nl_result;
         }
-        switch (st) {
-        case lp::lp_status::OPTIMAL: {
-            init_variable_values();
-            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            auto val = value(v);
-            blocker = mk_gt(v);
-            return val;
-        }
-        case lp::lp_status::FEASIBLE: {
-            auto val = value(v);
-            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            blocker = mk_gt(v);
-            return val;
-        }
-        default:
-            SASSERT(st == lp::lp_status::UNBOUNDED);
-            TRACE(arith, display(tout << st << " v" << v << " vi: " << vi << "\n"););
-            has_shared = false;
-            blocker = m.mk_false();
-            return inf_eps(rational::one(), inf_rational());
-        }
+        return max_result(v, vi, st, blocker, has_shared);
     }
 
     expr_ref mk_gt(theory_var v) {
         lp::impq val = get_ivalue(v);
+        return mk_gt(v, val);
+    }
+
+    // Overload: create blocker from a saved impq value (used when x has been restored)
+    expr_ref mk_gt(theory_var v, lp::impq const& val) {
         expr* obj = get_enode(v)->get_expr();
         rational r = val.x;
         expr_ref e(m);
@@ -4153,10 +4320,11 @@ public:
                 out << bpp(e) << " " << ctx().get_assignment(lit) << "\n";
                 break;
             }
-            case equality_source: 
-                out << pp(m_equalities[idx].first) << " = " 
-                    << pp(m_equalities[idx].second) << "\n"; 
+            case equality_source: {
+                auto [n1, n2] = m_equalities[idx];
+                out << pp(n1) << " = " << pp(n2) << "\n";
                 break;
+            }
             case definition_source: {
                 theory_var v = m_definitions[idx];
                 if (v != null_theory_var) 
@@ -4198,6 +4366,13 @@ public:
         m_bounded_range_lit = null_literal;
         m_bound_terms.reset();
         m_bound_predicate = nullptr;
+    }
+
+    void updt_params() {
+        if (m_solver)
+            m_solver->updt_params(ctx().get_params());
+        if (m_nla)
+            m_nla->updt_params(ctx().get_params());
     }
 
 
@@ -4360,8 +4535,16 @@ void theory_lra::setup() {
     m_imp->setup();
 }
 
+void theory_lra::updt_params() {
+    m_imp->updt_params();
+}
+
 void theory_lra::validate_model(proto_model& mdl) {
     m_imp->validate_model(mdl);
+}
+
+lbool theory_lra::check_lp_feasible(vector<std::pair<bool, expr_ref>>& ineqs, literal_vector& lit_core, enode_pair_vector& eq_core) {
+    return m_imp->check_lp_feasible(ineqs, lit_core, eq_core);
 }
 
 }

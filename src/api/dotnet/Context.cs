@@ -563,6 +563,63 @@ namespace Microsoft.Z3
         }
 
         /// <summary>
+        /// Create a type variable sort for use as a parameter in polymorphic datatypes.
+        /// </summary>
+        /// <param name="name">name of the type variable</param>
+        public Sort MkTypeVariable(Symbol name)
+        {
+            Debug.Assert(name != null);
+            CheckContextMatch(name);
+            return new Sort(this, Native.Z3_mk_type_variable(nCtx, name.NativeObject));
+        }
+
+        /// <summary>
+        /// Create a type variable sort for use as a parameter in polymorphic datatypes.
+        /// </summary>
+        /// <param name="name">name of the type variable</param>
+        public Sort MkTypeVariable(string name)
+        {
+            using var symbol = MkSymbol(name);
+            return MkTypeVariable(symbol);
+        }
+
+        /// <summary>
+        /// Create a polymorphic datatype sort with explicit type parameters.
+        /// Type parameters should be sorts created with <see cref="MkTypeVariable(string)"/>.
+        /// </summary>
+        /// <param name="name">name of the datatype sort</param>
+        /// <param name="typeParams">array of type variable sorts</param>
+        /// <param name="constructors">array of constructors</param>
+        public DatatypeSort MkPolymorphicDatatypeSort(Symbol name, Sort[] typeParams, Constructor[] constructors)
+        {
+            Debug.Assert(name != null);
+            Debug.Assert(typeParams != null);
+            Debug.Assert(constructors != null);
+            Debug.Assert(constructors.All(c => c != null));
+
+            CheckContextMatch(name);
+            CheckContextMatch<Sort>(typeParams);
+            CheckContextMatch<Constructor>(constructors);
+            return new DatatypeSort(this,
+                Native.Z3_mk_polymorphic_datatype(nCtx, name.NativeObject,
+                    (uint)typeParams.Length, AST.ArrayToNative(typeParams),
+                    (uint)constructors.Length, Z3Object.ArrayToNative(constructors)));
+        }
+
+        /// <summary>
+        /// Create a polymorphic datatype sort with explicit type parameters.
+        /// Type parameters should be sorts created with <see cref="MkTypeVariable(string)"/>.
+        /// </summary>
+        /// <param name="name">name of the datatype sort</param>
+        /// <param name="typeParams">array of type variable sorts</param>
+        /// <param name="constructors">array of constructors</param>
+        public DatatypeSort MkPolymorphicDatatypeSort(string name, Sort[] typeParams, Constructor[] constructors)
+        {
+            using var symbol = MkSymbol(name);
+            return MkPolymorphicDatatypeSort(symbol, typeParams, constructors);
+        }
+
+        /// <summary>
         /// Update a datatype field at expression t with value v.
         /// The function performs a record update at t. The field
         /// that is passed in as argument is updated with value v,
@@ -2438,6 +2495,180 @@ namespace Microsoft.Z3
             CheckContextMatch(arg1);
             CheckContextMatch(arg2);
             return (BoolExpr)Expr.Create(this, Native.Z3_mk_set_subset(nCtx, arg1.NativeObject, arg2.NativeObject));
+        }
+
+        #endregion
+
+        #region Finite Sets
+
+        /// <summary>
+        /// Create a finite set sort over the given element sort.
+        /// </summary>
+        public FiniteSetSort MkFiniteSetSort(Sort elemSort)
+        {
+            Debug.Assert(elemSort != null);
+
+            CheckContextMatch(elemSort);
+            return new FiniteSetSort(this, elemSort);
+        }
+
+        /// <summary>
+        /// Check if a sort is a finite set sort.
+        /// </summary>
+        public bool IsFiniteSetSort(Sort s)
+        {
+            Debug.Assert(s != null);
+
+            CheckContextMatch(s);
+            return Native.Z3_is_finite_set_sort(nCtx, s.NativeObject) != 0;
+        }
+
+        /// <summary>
+        /// Get the element sort (basis) of a finite set sort.
+        /// </summary>
+        public Sort GetFiniteSetSortBasis(Sort s)
+        {
+            Debug.Assert(s != null);
+
+            CheckContextMatch(s);
+            return Sort.Create(this, Native.Z3_get_finite_set_sort_basis(nCtx, s.NativeObject));
+        }
+
+        /// <summary>
+        /// Create an empty finite set.
+        /// </summary>
+        public Expr MkFiniteSetEmpty(Sort setSort)
+        {
+            Debug.Assert(setSort != null);
+
+            CheckContextMatch(setSort);
+            return Expr.Create(this, Native.Z3_mk_finite_set_empty(nCtx, setSort.NativeObject));
+        }
+
+        /// <summary>
+        /// Create a singleton finite set.
+        /// </summary>
+        public Expr MkFiniteSetSingleton(Expr elem)
+        {
+            Debug.Assert(elem != null);
+
+            CheckContextMatch(elem);
+            return Expr.Create(this, Native.Z3_mk_finite_set_singleton(nCtx, elem.NativeObject));
+        }
+
+        /// <summary>
+        /// Create the union of two finite sets.
+        /// </summary>
+        public Expr MkFiniteSetUnion(Expr s1, Expr s2)
+        {
+            Debug.Assert(s1 != null);
+            Debug.Assert(s2 != null);
+
+            CheckContextMatch(s1);
+            CheckContextMatch(s2);
+            return Expr.Create(this, Native.Z3_mk_finite_set_union(nCtx, s1.NativeObject, s2.NativeObject));
+        }
+
+        /// <summary>
+        /// Create the intersection of two finite sets.
+        /// </summary>
+        public Expr MkFiniteSetIntersect(Expr s1, Expr s2)
+        {
+            Debug.Assert(s1 != null);
+            Debug.Assert(s2 != null);
+
+            CheckContextMatch(s1);
+            CheckContextMatch(s2);
+            return Expr.Create(this, Native.Z3_mk_finite_set_intersect(nCtx, s1.NativeObject, s2.NativeObject));
+        }
+
+        /// <summary>
+        /// Create the difference of two finite sets.
+        /// </summary>
+        public Expr MkFiniteSetDifference(Expr s1, Expr s2)
+        {
+            Debug.Assert(s1 != null);
+            Debug.Assert(s2 != null);
+
+            CheckContextMatch(s1);
+            CheckContextMatch(s2);
+            return Expr.Create(this, Native.Z3_mk_finite_set_difference(nCtx, s1.NativeObject, s2.NativeObject));
+        }
+
+        /// <summary>
+        /// Check for membership in a finite set.
+        /// </summary>
+        public BoolExpr MkFiniteSetMember(Expr elem, Expr set)
+        {
+            Debug.Assert(elem != null);
+            Debug.Assert(set != null);
+
+            CheckContextMatch(elem);
+            CheckContextMatch(set);
+            return (BoolExpr)Expr.Create(this, Native.Z3_mk_finite_set_member(nCtx, elem.NativeObject, set.NativeObject));
+        }
+
+        /// <summary>
+        /// Get the cardinality of a finite set.
+        /// </summary>
+        public Expr MkFiniteSetSize(Expr set)
+        {
+            Debug.Assert(set != null);
+
+            CheckContextMatch(set);
+            return Expr.Create(this, Native.Z3_mk_finite_set_size(nCtx, set.NativeObject));
+        }
+
+        /// <summary>
+        /// Check if one finite set is a subset of another.
+        /// </summary>
+        public BoolExpr MkFiniteSetSubset(Expr s1, Expr s2)
+        {
+            Debug.Assert(s1 != null);
+            Debug.Assert(s2 != null);
+
+            CheckContextMatch(s1);
+            CheckContextMatch(s2);
+            return (BoolExpr)Expr.Create(this, Native.Z3_mk_finite_set_subset(nCtx, s1.NativeObject, s2.NativeObject));
+        }
+
+        /// <summary>
+        /// Map a function over all elements in a finite set.
+        /// </summary>
+        public Expr MkFiniteSetMap(Expr f, Expr set)
+        {
+            Debug.Assert(f != null);
+            Debug.Assert(set != null);
+
+            CheckContextMatch(f);
+            CheckContextMatch(set);
+            return Expr.Create(this, Native.Z3_mk_finite_set_map(nCtx, f.NativeObject, set.NativeObject));
+        }
+
+        /// <summary>
+        /// Filter a finite set with a predicate.
+        /// </summary>
+        public Expr MkFiniteSetFilter(Expr f, Expr set)
+        {
+            Debug.Assert(f != null);
+            Debug.Assert(set != null);
+
+            CheckContextMatch(f);
+            CheckContextMatch(set);
+            return Expr.Create(this, Native.Z3_mk_finite_set_filter(nCtx, f.NativeObject, set.NativeObject));
+        }
+
+        /// <summary>
+        /// Create a finite set containing integers in the range [low, high].
+        /// </summary>
+        public Expr MkFiniteSetRange(Expr low, Expr high)
+        {
+            Debug.Assert(low != null);
+            Debug.Assert(high != null);
+
+            CheckContextMatch(low);
+            CheckContextMatch(high);
+            return Expr.Create(this, Native.Z3_mk_finite_set_range(nCtx, low.NativeObject, high.NativeObject));
         }
 
         #endregion

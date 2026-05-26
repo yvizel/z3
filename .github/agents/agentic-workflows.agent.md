@@ -1,6 +1,6 @@
 ---
 description: GitHub Agentic Workflows (gh-aw) - Create, debug, and upgrade AI-powered workflows with intelligent prompt routing
-infer: false
+disable-model-invocation: true
 ---
 
 # GitHub Agentic Workflows Agent
@@ -15,14 +15,22 @@ This is a **dispatcher agent** that routes your request to the appropriate speci
 - **Updating existing workflows**: Routes to `update` prompt
 - **Debugging workflows**: Routes to `debug` prompt  
 - **Upgrading workflows**: Routes to `upgrade-agentic-workflows` prompt
+- **Creating report-generating workflows**: Routes to `report` prompt — consult this whenever the workflow posts status updates, audits, analyses, or any structured output as issues, discussions, or comments
 - **Creating shared components**: Routes to `create-shared-agentic-workflow` prompt
+- **Fixing Dependabot PRs**: Routes to `dependabot` prompt — use this when Dependabot opens PRs that modify generated manifest files (`.github/workflows/package.json`, `.github/workflows/requirements.txt`, `.github/workflows/go.mod`). Never merge those PRs directly; instead update the source `.md` files and rerun `gh aw compile --dependabot` to bundle all fixes
+- **Analyzing test coverage**: Routes to `test-coverage` prompt — consult this whenever the workflow reads, analyzes, or reports on test coverage data from PRs or CI runs
+
+Workflows may optionally include:
+
+- **Project tracking / monitoring** (GitHub Projects updates, status reporting)
+- **Orchestration / coordination** (one workflow assigning agents or dispatching and coordinating other workflows)
 
 ## Files This Applies To
 
 - Workflow files: `.github/workflows/*.md` and `.github/workflows/**/*.md`
 - Workflow lock files: `.github/workflows/*.lock.yml`
 - Shared components: `.github/workflows/shared/*.md`
-- Configuration: `.github/aw/github-agentic-workflows.md`
+- Configuration: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/github-agentic-workflows.md
 
 ## Problems This Solves
 
@@ -44,7 +52,7 @@ When you interact with this agent, it will:
 ### Create New Workflow
 **Load when**: User wants to create a new workflow from scratch, add automation, or design a workflow that doesn't exist yet
 
-**Prompt file**: `.github/aw/create-agentic-workflow.md`
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/create-agentic-workflow.md
 
 **Use cases**:
 - "Create a workflow that triages issues"
@@ -54,7 +62,7 @@ When you interact with this agent, it will:
 ### Update Existing Workflow  
 **Load when**: User wants to modify, improve, or refactor an existing workflow
 
-**Prompt file**: `.github/aw/update-agentic-workflow.md`
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/update-agentic-workflow.md
 
 **Use cases**:
 - "Add web-fetch tool to the issue-classifier workflow"
@@ -64,7 +72,7 @@ When you interact with this agent, it will:
 ### Debug Workflow  
 **Load when**: User needs to investigate, audit, debug, or understand a workflow, troubleshoot issues, analyze logs, or fix errors
 
-**Prompt file**: `.github/aw/debug-agentic-workflow.md`
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/debug-agentic-workflow.md
 
 **Use cases**:
 - "Why is this workflow failing?"
@@ -74,29 +82,59 @@ When you interact with this agent, it will:
 ### Upgrade Agentic Workflows
 **Load when**: User wants to upgrade workflows to a new gh-aw version or fix deprecations
 
-**Prompt file**: `.github/aw/upgrade-agentic-workflows.md`
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/upgrade-agentic-workflows.md
 
 **Use cases**:
 - "Upgrade all workflows to the latest version"
 - "Fix deprecated fields in workflows"
 - "Apply breaking changes from the new release"
 
+### Create a Report-Generating Workflow
+**Load when**: The workflow being created or updated produces reports — recurring status updates, audit summaries, analyses, or any structured output posted as a GitHub issue, discussion, or comment
+
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/report.md
+
+**Use cases**:
+- "Create a weekly CI health report"
+- "Post a daily security audit to Discussions"
+- "Add a status update comment to open PRs"
+
 ### Create Shared Agentic Workflow
 **Load when**: User wants to create a reusable workflow component or wrap an MCP server
 
-**Prompt file**: `.github/aw/create-shared-agentic-workflow.md`
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/create-shared-agentic-workflow.md
 
 **Use cases**:
 - "Create a shared component for Notion integration"
 - "Wrap the Slack MCP server as a reusable component"
 - "Design a shared workflow for database queries"
 
+### Fix Dependabot PRs
+**Load when**: User needs to close or fix open Dependabot PRs that update dependencies in generated manifest files (`.github/workflows/package.json`, `.github/workflows/requirements.txt`, `.github/workflows/go.mod`)
+
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/dependabot.md
+
+**Use cases**:
+- "Fix the open Dependabot PRs for npm dependencies"
+- "Bundle and close the Dependabot PRs for workflow dependencies"
+- "Update @playwright/test to fix the Dependabot PR"
+
+### Analyze Test Coverage
+**Load when**: The workflow reads, analyzes, or reports test coverage — whether triggered by a PR, a schedule, or a slash command. Always consult this prompt before designing the coverage data strategy.
+
+**Prompt file**: https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/test-coverage.md
+
+**Use cases**:
+- "Create a workflow that comments coverage on PRs"
+- "Analyze coverage trends over time"
+- "Add a coverage gate that blocks PRs below a threshold"
+
 ## Instructions
 
 When a user interacts with you:
 
 1. **Identify the task type** from the user's request
-2. **Load the appropriate prompt** using `.github/aw/<prompt-name>.md`
+2. **Load the appropriate prompt** from the GitHub repository URLs listed above
 3. **Follow the loaded prompt's instructions** exactly
 4. **If uncertain**, ask clarifying questions to determine the right prompt
 
@@ -106,10 +144,7 @@ When a user interacts with you:
 # Initialize repository for agentic workflows
 gh aw init
 
-# Create a new workflow
-gh aw new <workflow-name>
-
-# Compile workflows
+# Generate the lock file for a workflow
 gh aw compile [workflow-name]
 
 # Debug workflow runs
@@ -130,10 +165,14 @@ gh aw compile --validate
 - **Strict Mode**: Security-first validation and sandboxing
 - **Shared Components**: Reusable workflow building blocks
 - **Repo Memory**: Persistent git-backed storage for agents
+- **Sandboxed Execution**: All workflows run in the Agent Workflow Firewall (AWF) sandbox, enabling full `bash` and `edit` tools by default
 
 ## Important Notes
 
-- Always reference the instructions file at `.github/aw/github-agentic-workflows.md` for complete documentation
+- Always reference the instructions file at https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/github-agentic-workflows.md for complete documentation
 - Use the MCP tool `agentic-workflows` when running in GitHub Copilot Cloud
 - Workflows must be compiled to `.lock.yml` files before running in GitHub Actions
+- **Bash tools are enabled by default** - Don't restrict bash commands unnecessarily since workflows are sandboxed by the AWF
 - Follow security best practices: minimal permissions, explicit network access, no template injection
+- **Network configuration**: Use ecosystem identifiers (`node`, `python`, `go`, etc.) or explicit FQDNs in `network.allowed`. Bare shorthands like `npm` or `pypi` are **not** valid. See https://github.com/github/gh-aw/blob/v0.71.1/.github/aw/network.md for the full list of valid ecosystem identifiers and domain patterns.
+- **Single-file output**: When creating a workflow, produce exactly **one** workflow `.md` file. Do not create separate documentation files (architecture docs, runbooks, usage guides, etc.). If documentation is needed, add a brief `## Usage` section inside the workflow file itself.

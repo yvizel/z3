@@ -744,11 +744,12 @@ namespace opt {
         for (unsigned i = 0; i < m_objectives.size(); ++i) {
             objective const& obj = m_objectives[i];
             display_objective(out, obj);
+            auto [lower, upper] = b[i];
             if (obj.m_type == O_MAXIMIZE) {
-                out << " |-> [" << b[i].first << ":" << b[i].second << "]\n";
+                out << " |-> [" << lower << ":" << upper << "]\n";
             }
             else {
-                out << " |-> [" << -b[i].second << ":" << -b[i].first << "]\n";
+                out << " |-> [" << -upper << ":" << -lower << "]\n";
             }
         }        
     }
@@ -947,8 +948,10 @@ namespace opt {
             g->assert_expr(fml);
         for (expr * a : asms) 
             g->assert_expr(a, a);
+        params_ref som_params(m_params);
+        som_params.set_bool("som", true);
         tactic_ref tac0 = 
-            and_then(mk_simplify_tactic(m, m_params), 
+            and_then(mk_simplify_tactic(m, som_params), 
                      mk_propagate_values_tactic(m),
                      m_incremental ? mk_skip_tactic() : mk_solve_eqs_tactic(m),
                      mk_simplify_tactic(m));   

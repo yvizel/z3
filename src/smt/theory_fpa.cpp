@@ -414,6 +414,12 @@ namespace smt {
     void theory_fpa::pop_scope_eh(unsigned num_scopes) {
         m_trail_stack.pop_scope(num_scopes);
         TRACE(t_fpa, tout << "pop " << num_scopes << "; now " << m_trail_stack.get_num_scopes() << "\n";);
+        // Reset the fpa2bv rewriter cache so that expressions re-converted after
+        // a pop regenerate their side conditions (extra_assertions). Without this,
+        // the rewriter returns cached results without invoking mk_uf/mk_const and
+        // the axioms connecting FP UFs to their BV counterparts are never re-emitted,
+        // causing a soundness issue in incremental mode.
+        m_rw.reset();
         theory::pop_scope_eh(num_scopes);
     }
 
@@ -455,8 +461,7 @@ namespace smt {
                     SASSERT(to_app(bv_val_e)->get_num_args() == 3);
                     app_ref bv_val_a(m);
                     bv_val_a = to_app(bv_val_e.get());
-                    expr * args[] = { bv_val_a->get_arg(0), bv_val_a->get_arg(1), bv_val_a->get_arg(2) };
-                    cc_args = m_bv_util.mk_concat(3, args);
+                    cc_args = m_bv_util.mk_concat({bv_val_a->get_arg(0), bv_val_a->get_arg(1), bv_val_a->get_arg(2)});
                     c = m.mk_eq(wrapped, cc_args);
                     assert_cnstr(c);
                     assert_cnstr(mk_side_conditions());
@@ -467,6 +472,22 @@ namespace smt {
                     wu = m.mk_eq(m_converter.unwrap(wrapped, n->get_sort()), n);
                     TRACE(t_fpa, tout << "w/u eq: " << std::endl << mk_ismt2_pp(wu, m) << std::endl;);
                     assert_cnstr(wu);
+
+                    // For non-FPA-family terms (e.g. datatype accessors like
+                    // get-fp), mk_uf creates a separate BV UF that is not
+                    // linked to bvwrap. Assert wrap(n) == concat(conv_components)
+                    // to close the constraint gap (same pattern as numerals above).
+                    if (n->get_family_id() != get_family_id()) {
+                        expr_ref conv_e = convert(n);
+                        if (m_fpa_util.is_fp(conv_e) && to_app(conv_e)->get_num_args() == 3) {
+                            app_ref conv_a(m);
+                            conv_a = to_app(conv_e.get());
+                            expr_ref cc(m);
+                            cc = m_bv_util.mk_concat({conv_a->get_arg(0), conv_a->get_arg(1), conv_a->get_arg(2)});
+                            assert_cnstr(m.mk_eq(wrapped, cc));
+                            assert_cnstr(mk_side_conditions());
+                        }
+                    }
                 }
             }
         }

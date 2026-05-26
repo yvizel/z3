@@ -1969,8 +1969,7 @@ void pred_transformer::update_solver_with_rfs(prop_solver *solver,
             e = m.mk_or(m.mk_not(rule_tag), rf->get(), rf->tag());
         }
         else {
-            expr *args[4] = { not_rule_tag, last_tag, rf->get(), rf->tag() };
-            e = m.mk_or(4, args);
+            e = m.mk_or(not_rule_tag, last_tag, rf->get(), rf->tag());
         }
         last_tag = m.mk_not(rf->tag());
         pm.formula_n2o(e.get(), e, pos);
@@ -3331,7 +3330,7 @@ bool context::is_reachable(pob &n)
     model_ref mdl;
 
     // used in case n is reachable
-    bool is_concrete;
+    bool is_concrete = false;
     const datalog::rule * r = nullptr;
     // denotes which predecessor's (along r) reach facts are used
     bool_vector reach_pred_used;
@@ -3522,7 +3521,7 @@ lbool context::expand_pob(pob& n, pob_ref_buffer &out)
     model_ref model;
 
     // used in case n is reachable
-    bool is_concrete;
+    bool is_concrete = false;
     const datalog::rule * r = nullptr;
     // denotes which predecessor's (along r) reach facts are used
     bool_vector reach_pred_used;

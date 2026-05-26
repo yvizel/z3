@@ -238,18 +238,13 @@ namespace lp {
                 r.c() -= b.c();
                 return r;
             }
-#if Z3DEBUG
-            friend bool operator==(const term_o& a, const term_o& b) {
+            
+            friend bool eq(const term_o& a, const term_o& b) {
                 term_o t = a.clone();
                 t += mpq(-1) * b;
                 return t.c() == mpq(0) && t.size() == 0;
             }
 
-            friend bool operator!=(const term_o& a, const term_o& b) {
-                return ! (a  == b);
-            }
-
-#endif
             term_o& operator+=(const term_o& t) {
                 for (const auto& p : t) {
                     add_monomial(p.coeff(), p.j());
@@ -752,6 +747,7 @@ namespace lp {
             
             m_var_register.shrink(m_e_matrix.column_count());
 
+            remove_out_of_bounds_fresh_defs();
             remove_irrelevant_fresh_defs_for_row(i);
 
             if (m_k2s.has_val(i)) 
@@ -907,7 +903,6 @@ namespace lp {
                 return;
             }
             substitute_on_q(ei);
-            SASSERT(entry_invariant(ei));
         }
 
         void substitute_on_q_with_entry_in_S(unsigned ei, unsigned j, const mpq& alpha) {
@@ -1016,17 +1011,86 @@ namespace lp {
             }
         }
 
-        void remove_irrelevant_fresh_defs_for_row(unsigned ei) {
-            auto it = m_row2fresh_defs.find(ei);
-            if (it == m_row2fresh_defs.end()) return;            
-            for (unsigned xt : it->second) {
-                if (m_fresh_k2xt_terms.has_second_key(xt))
-                    m_fresh_k2xt_terms.erase_by_second_key(xt);
-            }
-            m_row2fresh_defs.erase(it);
+        // Remove fresh definitions whose terms reference the given variable
+        // Mark rows containing stale fresh variable for recalculation
+        void handle_stale_var_in_matrix(unsigned xt) {
+            if (xt >= m_e_matrix.column_count())
+                return;
+            // Mark all rows containing xt for recalculation
+            for (const auto& cell : m_e_matrix.m_columns[xt])
+                m_changed_rows.insert(cell.var());
         }
 
-        void remove_irrelevant_fresh_defs() {
+        // Collect all fresh vars that directly or transitively reference removed_xt
+        void collect_dependent_fresh_vars(unsigned removed_xt, std_vector<unsigned>& to_remove) {
+            std_vector<unsigned> newly_found;
+            for (const auto& p : m_fresh_k2xt_terms.m_bij.key_val_pairs()) {
+                unsigned xt = p.second;
+                if (xt == removed_xt) continue;
+                if (std::find(to_remove.begin(), to_remove.end(), xt) != to_remove.end())
+                    continue; // already marked for removal
+                const lar_term& term = m_fresh_k2xt_terms.get_by_val(xt).first;
+                // Check if term contains removed_xt or any var already marked for removal
+                if (term.contains(removed_xt)) {
+                    newly_found.push_back(xt);
+                } else {
+                    for (unsigned marked : to_remove)
+                        if (term.contains(marked)) {
+                            newly_found.push_back(xt);
+                            break;
+                        }
+                }
+            }
+            for (unsigned xt : newly_found)
+                to_remove.push_back(xt);
+            // Recurse if we found new ones (they might have dependents too)
+            if (!newly_found.empty())
+                for (unsigned xt : newly_found)
+                    collect_dependent_fresh_vars(xt, to_remove);
+        }
+
+        // Deep clean: remove fresh var and all dependents, clean m_e_matrix
+        void deep_remove_fresh_var(unsigned removed_xt) {
+            if (!m_fresh_k2xt_terms.has_second_key(removed_xt))
+                return;
+            
+            // Collect all vars that need to be removed (removed_xt and its dependents)
+            std_vector<unsigned> to_remove;
+            to_remove.push_back(removed_xt);
+            collect_dependent_fresh_vars(removed_xt, to_remove);
+            
+            // Remove them all
+            for (unsigned xt : to_remove) {
+                if (!m_fresh_k2xt_terms.has_second_key(xt))
+                    continue;
+                // Get the row before erasing
+                unsigned row = m_fresh_k2xt_terms.get_by_val(xt).second;
+                m_fresh_k2xt_terms.erase_by_second_key(xt);
+                // Update m_row2fresh_defs
+                auto it = m_row2fresh_defs.find(row);
+                if (it != m_row2fresh_defs.end()) {
+                    it->second.erase(std::remove(it->second.begin(), it->second.end(), xt), it->second.end());
+                    if (it->second.empty())
+                        m_row2fresh_defs.erase(it);
+                }
+                // Mark rows containing xt for recalculation
+                handle_stale_var_in_matrix(xt);
+            }
+        }
+
+        void remove_irrelevant_fresh_defs_for_row(unsigned ei) {
+            auto it = m_row2fresh_defs.find(ei);
+            if (it == m_row2fresh_defs.end()) return;
+            // Copy the list since deep_remove_fresh_var modifies m_row2fresh_defs
+            std_vector<unsigned> xts_to_remove = it->second;
+            for (unsigned xt : xts_to_remove)
+                deep_remove_fresh_var(xt);
+            // Ensure the row entry is removed (might already be gone)
+            m_row2fresh_defs.erase(ei);
+        }
+
+        // Remove fresh definitions for columns that are out of bounds after shrinking
+        void remove_out_of_bounds_fresh_defs() {
             std_vector<unsigned> xt_to_remove;
             std_vector<unsigned> rows_to_remove_the_defs_from;
             for (const auto& p : m_fresh_k2xt_terms.m_bij.key_val_pairs()) {
@@ -1037,17 +1101,18 @@ namespace lp {
                 }
             }
 
-            for (unsigned xt : xt_to_remove) {
-                m_fresh_k2xt_terms.erase_by_second_key(xt);
-            }
+            for (unsigned xt : xt_to_remove)
+                deep_remove_fresh_var(xt);
 
-            for (unsigned ei : m_changed_rows) {
+            for (unsigned ei : rows_to_remove_the_defs_from)
                 remove_irrelevant_fresh_defs_for_row(ei);
-            }
+        }
 
-            for (unsigned ei : rows_to_remove_the_defs_from) {
+        void remove_irrelevant_fresh_defs() {
+            remove_out_of_bounds_fresh_defs();
+
+            for (unsigned ei : m_changed_rows)
                 remove_irrelevant_fresh_defs_for_row(ei);
-            }
         }
 
         // this is a non-const function - it can set m_some_terms_are_ignored to true
@@ -1089,6 +1154,9 @@ namespace lp {
             for (unsigned ei : more_changed_rows)
                 m_changed_rows.insert(ei);
             
+            // Remove irrelevant fresh defs first - this may add more rows to m_changed_rows
+            remove_irrelevant_fresh_defs();
+            
             for (unsigned ei : m_changed_rows) {
                 if (ei >= m_e_matrix.row_count())
                     continue;
@@ -1100,11 +1168,11 @@ namespace lp {
                 if (!m_e_matrix.m_columns.empty() && m_e_matrix.m_columns.back().size() == 0) {
                     m_e_matrix.m_columns.pop_back();
                     m_var_register.shrink(m_e_matrix.column_count());
+                    remove_out_of_bounds_fresh_defs();
                 }
                 if (!m_l_matrix.m_columns.empty() && m_l_matrix.m_columns.back().size() == 0)
                     m_l_matrix.m_columns.pop_back();
             }
-            remove_irrelevant_fresh_defs();
             eliminate_substituted_in_changed_rows();
             m_changed_f_columns.reset();
             m_changed_rows.reset();
@@ -1468,7 +1536,7 @@ namespace lp {
             term_o t1 = open_ml(t0);
             t1.add_monomial(mpq(1), j);
             term_o rs = fix_vars(t1);
-            if (ls != rs) {
+            if (!eq(ls, rs)) {
                 TRACE(dio, tout << "ls:"; print_term_o(ls, tout) << "\n";
                       tout << "rs:"; print_term_o(rs, tout) << "\n";);
                 return false;
@@ -2111,7 +2179,7 @@ namespace lp {
         std::tuple<mpq, unsigned, int, unsigned> find_minimal_abs_coeff(unsigned ei) {
             bool first = true;
             mpq ahk;
-            unsigned k = -1;
+            unsigned k = UINT_MAX;
             int k_sign = 0;
             mpq t;
             for (const auto& p : m_e_matrix.m_rows[ei]) {
@@ -2278,7 +2346,7 @@ namespace lp {
 
                 return false;
             }
-            bool ret = ls == fix_vars(open_ml(m_l_matrix.m_rows[ei]));
+            bool ret = eq(ls, fix_vars(open_ml(m_l_matrix.m_rows[ei])));
             if (!ret) {
                 CTRACE(dio, !ret,
                    {
@@ -2485,12 +2553,12 @@ namespace lp {
         lia_move rewrite_eqs(std_vector<unsigned>& f_vector) {
             if (f_vector.size() == 0)
                 return lia_move::undef;
-            unsigned h = -1, kh = 0; // the initial value of kh does not matter, assign to remove the warning
+            unsigned h = UINT_MAX, kh = 0; // the initial value of kh does not matter, assign to remove the warning
             unsigned n = 0;  // number of choices for a fresh variable
             mpq min_ahk;
             int kh_sign = 0; // the initial values of kh_sign and h_markovich_number do not matter, assign to remove the warning
             unsigned h_markovich_number = 0;
-            unsigned ih = -1; // f_vector[ih] = h
+            unsigned ih = UINT_MAX; // f_vector[ih] = h
             for (unsigned i = 0; i < f_vector.size(); ++i) {
                 unsigned ei = f_vector[i];
                 SASSERT (belongs_to_f(ei));

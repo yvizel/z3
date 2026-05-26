@@ -115,3 +115,12 @@ genaisrc/genblogpost.genai.mts
 *.mts
 # Bazel generated files
 bazel-*
+# Local issue tracking
+.beads
+.z3-agent/
+.playwright*/
+.atomic/
+.deepscan/
+.deeptest/
+tptp_test/
+tptp_benchmarks/

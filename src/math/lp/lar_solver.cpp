@@ -36,7 +36,12 @@ namespace lp {
 
         struct term_comparer {
             bool operator()(const lar_term& a, const lar_term& b) const {
-                return a == b;
+                if (a.size() != b.size()) return false;
+                for (const auto& p : a) {
+                    auto const* e = b.coeffs().find_core(p.j());
+                    if (!e || e->get_data().m_value != p.coeff()) return false;
+                }
+                return true;
             }
         };
 
@@ -466,6 +471,8 @@ namespace lp {
         auto ret = solve();
         return ret;
     }
+
+
 
     lp_status lar_solver::solve() {
         if (m_imp->m_status == lp_status::INFEASIBLE || m_imp->m_status == lp_status::CANCELLED)
@@ -1583,7 +1590,7 @@ namespace lp {
         }
     }
 
-    void lar_solver::set_variable_name(lpvar vi, std::string name) {
+    void lar_solver::set_variable_name(lpvar vi, const std::string& name) {
         m_imp->m_var_register.set_name(vi, name);
     }
 
@@ -2303,16 +2310,6 @@ namespace lp {
         return m_imp->m_constraints.add_term_constraint(j, m_imp->m_columns[j].term(), kind, rs);
     }
 
-    struct lar_solver::scoped_backup {
-        lar_solver& m_s;
-        scoped_backup(lar_solver& s) : m_s(s) {
-            m_s.get_core_solver().backup_x();
-        }
-        ~scoped_backup() {
-            m_s.get_core_solver().restore_x();
-        }
-    };
-   
     void lar_solver::update_column_type_and_bound_with_ub(unsigned j, lp::lconstraint_kind kind, const mpq& right_side, u_dependency* dep) {
         SASSERT(column_has_upper_bound(j));
         if (column_has_lower_bound(j)) {
