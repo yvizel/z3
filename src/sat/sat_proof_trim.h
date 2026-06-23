@@ -25,6 +25,7 @@
 #include "sat/sat_clause.h"
 #include "sat/sat_types.h"
 #include "sat/sat_solver.h"
+#include "sat/proof_mark.h"
 #include "sat/proof_replay_validator.h"
 
 namespace sat {
@@ -38,6 +39,8 @@ namespace sat {
         clause*        m_conflict_clause = nullptr;
         vector<std::tuple<unsigned, literal_vector, clause*, bool, bool>> m_trail;
         vector<std::pair<unsigned, unsigned_vector>> m_result;
+        bool           m_has_terminal_empty_clause = false;
+        unsigned       m_terminal_empty_clause_id = 0;
         
         struct hash {
             unsigned operator()(literal_vector const& v) const {
@@ -55,11 +58,18 @@ namespace sat {
             clause_vector m_clauses;
             unsigned      m_id = 0;
             bool          m_in_core = false;
+            ab_mark       m_mark = MARK_NONE;
         };
 
-        
+
         map<literal_vector, clause_info, hash, eq>   m_clauses;
         bool_vector                         m_propagated;
+
+        // A/B markings for interpolation. Populated only when m_interpolate is set.
+        bool              m_interpolate = false;
+        svector<ab_mark>  m_marks;       // clause id -> mark
+        svector<ab_mark>  m_var_mark;    // bool_var -> mark (over original clauses)
+        svector<ab_mark>  m_trail_mark;  // bool_var -> mark of its level-0 unit clause
 
         void del(literal_vector const& cl, clause* cp);
 
@@ -90,10 +100,23 @@ namespace sat {
         void add_literal(bool_var v, bool sign) { m_clause.push_back(literal(v, sign)); }
         unsigned num_vars() { return s.num_vars(); }
 
-        void assume(unsigned id, bool is_initial = true);
+        void assume(unsigned id, bool is_initial = true, ab_mark mark = MARK_NONE);
         void del();
         void infer(unsigned id);
         void updt_params(params_ref const& p) { s.updt_params(p); }
+
+        // Interpolation A/B markings.
+        void set_interpolate(bool b) { m_interpolate = b; }
+        bool interpolate() const { return m_interpolate; }
+
+        // Compute A/B markings for inferred clauses, variables and the
+        // level-0 trail. Must be called after trim() has populated m_result.
+        // No-op unless interpolation is enabled.
+        void compute_marks();
+
+        ab_mark clause_mark(unsigned id) const { return id < m_marks.size() ? m_marks[id] : MARK_NONE; }
+        ab_mark var_mark(bool_var v) const { return v < m_var_mark.size() ? m_var_mark[v] : MARK_NONE; }
+        ab_mark trail_mark(literal l) const { return l.var() < m_trail_mark.size() ? m_trail_mark[l.var()] : MARK_NONE; }
 
         vector<std::pair<unsigned, unsigned_vector>> trim();
         

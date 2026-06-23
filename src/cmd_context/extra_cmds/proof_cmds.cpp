@@ -97,11 +97,15 @@ public:
         m_rup = symbol("rup");
     }
     
-    void assume(expr_ref_vector const& clause) {
+    void assume(expr_ref_vector const& clause, sat::ab_mark mark = sat::MARK_NONE) {
         mk_clause(clause);
-        trim.assume(m_clauses.size());
+        trim.assume(m_clauses.size(), true, mark);
         m_clauses.push_back(clause);
         m_is_infer.push_back(false);
+    }
+
+    void set_interpolate(bool b) {
+        trim.set_interpolate(b);
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -123,7 +127,7 @@ public:
      * be used.
      */
     
-    void infer(expr_ref_vector const& clause, app* hint) {
+    void infer(expr_ref_vector const& clause, app* hint, sat::ab_mark mark = sat::MARK_NONE) {
         if (m_empty)
             return;
 
@@ -132,13 +136,13 @@ public:
             if (clause1.size() != clause.size()) {
                 mk_clause(clause1);
                 clause1.push_back(hint);
-                trim.assume(m_clauses.size());
-                m_clauses.push_back(clause1);                
+                trim.assume(m_clauses.size(), true, mark);
+                m_clauses.push_back(clause1);
                 m_is_infer.push_back(true);
-                
+
                 if (clause.empty()) {
                     mk_clause(clause);
-                    trim.infer(m_clauses.size());                    
+                    trim.infer(m_clauses.size());
                     m_clauses.push_back(clause);
                     m_clauses.back().push_back(hint);
                     m_is_infer.push_back(true);
@@ -154,7 +158,7 @@ public:
         if (is_rup(hint))
             trim.infer(m_clauses.size());
         else
-            trim.assume(m_clauses.size());
+            trim.assume(m_clauses.size(), true, mark);
         m_clauses.push_back(clause);
         if (hint)
             m_clauses.back().push_back(hint);
@@ -187,7 +191,8 @@ public:
         auto ids = trim.trim();
         out << "; proof trimming complete, " << ids.size() << " clauses in trimmed proof\n";
         if (replay) {
-            trim.replay_proof(ids, out);
+            //trim.replay_proof(ids, out);
+            trim.replay_proof_with_validation(ids, out);
         }
         for (auto const& [id, deps] : ids) {
             auto& clause = m_clauses[id];
@@ -256,6 +261,8 @@ class proof_cmds_imp : public proof_cmds {
     bool            m_save   = false;
     bool            m_trim   = false;
     bool            m_replay = false;
+    bool            m_interpolate = false;
+    sat::ab_mark    m_mark   = sat::MARK_NONE;
     scoped_ptr<euf::smt_proof_checker>     m_checker;
     scoped_ptr<proof_saver>     m_saver;
     scoped_ptr<proof_trim>      m_trimmer;
@@ -283,6 +290,17 @@ class proof_cmds_imp : public proof_cmds {
         return m.is_proof(e) && symbol("deps") == to_app(e)->get_name();
     }
 
+    // A/B partition mark for interpolation, encoded as a nullary proof app
+    // __itp_A or __itp_B.
+    bool is_mark(expr* e, sat::ab_mark& mark) {
+        if (!m.is_proof(e) || !is_app(e))
+            return false;
+        symbol const& n = to_app(e)->get_name();
+        if (n == symbol("__itp_A")) { mark = sat::MARK_A; return true; }
+        if (n == symbol("__itp_B")) { mark = sat::MARK_B; return true; }
+        return false;
+    }
+
     void get_deps(expr* e) {
         rational n;
         bool is_int = false;
@@ -305,8 +323,11 @@ public:
 
     void add_literal(expr* e) override {
         if (m.is_proof(e)) {
+            sat::ab_mark mark;
             if (is_dep(e))
                 get_deps(e);
+            else if (is_mark(e, mark))
+                m_mark = mark;
             else if (!m_proof_hint)
                 m_proof_hint = to_app(e);
         }
@@ -322,12 +343,13 @@ public:
         if (m_save)
             saver().assume(m_lits);
         if (m_trim)
-            trim().assume(m_lits);
+            trim().assume(m_lits, m_mark);
         if (m_on_clause_eh)
             m_on_clause_eh(m_on_clause_ctx, assumption(), m_deps.size(), m_deps.data(), m_lits.size(), m_lits.data());
         m_lits.reset();
         m_proof_hint.reset();
         m_deps.reset();
+        m_mark = sat::MARK_NONE;
     }
 
     void end_infer() override {
@@ -336,12 +358,13 @@ public:
         if (m_save)
             saver().infer(m_lits, m_proof_hint);
         if (m_trim)
-            trim().infer(m_lits, m_proof_hint);
+            trim().infer(m_lits, m_proof_hint, m_mark);
         if (m_on_clause_eh)
             m_on_clause_eh(m_on_clause_ctx, m_proof_hint, m_deps.size(), m_deps.data(), m_lits.size(), m_lits.data());
         m_lits.reset();
         m_proof_hint.reset();
         m_deps.reset();
+        m_mark = sat::MARK_NONE;
     }
 
     void end_deleted() override {
@@ -356,17 +379,20 @@ public:
         m_lits.reset();
         m_proof_hint.reset();
         m_deps.reset();
+        m_mark = sat::MARK_NONE;
     }
 
     void updt_params(params_ref const& p) override {
         solver_params sp(p);
-        m_save  = sp.proof_save();        
+        m_save  = sp.proof_save();
         m_trim  = sp.proof_trim();
         m_replay = sp.proof_replay();
+        m_interpolate = sp.proof_interpolate();
         m_check = sp.proof_check() && !m_trim && !m_save && !m_on_clause_eh;
         if (m_trim) {
             trim().updt_params(p);
             trim().set_replay(m_replay);
+            trim().set_interpolate(m_interpolate);
         }
     }
 

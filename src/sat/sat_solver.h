@@ -234,6 +234,7 @@ namespace sat {
         friend class lut_finder;
         friend class npn3_finder;
         friend class proof_trim;
+        friend class proof_replay_validator;
         friend struct backoff;
     public:
         solver(params_ref const & p, reslimit& l);

@@ -17,6 +17,8 @@
 --*/
 
 #include "sat/sat_proof_trim.h"
+
+#include "proof_visitor_impl.h"
 #include "sat/proof_replay_validator.h"
 
 namespace sat {
@@ -31,12 +33,15 @@ namespace sat {
     vector<std::pair<unsigned, unsigned_vector>> proof_trim::trim() {
         m_result.reset();
         m_propagated.resize(num_vars(), false);
+        m_has_terminal_empty_clause = false;
 
 
         IF_VERBOSE(10, s.display(verbose_stream() << "trim\n"));
 
         auto const& [id, cl, clp, is_add, is_initial] = m_trail.back();
         SASSERT(cl.empty());
+        m_has_terminal_empty_clause = true;
+        m_terminal_empty_clause_id = id;
         m_result.push_back({id, unsigned_vector()});
         conflict_analysis_core(m_conflict, m_conflict_clause);
         m_trail.pop_back();
@@ -62,9 +67,68 @@ namespace sat {
             conflict_analysis_core(cl, clp);            
         }
         m_result.reverse();
+        compute_marks();
         return m_result;
     }
-    
+
+    /**
+       Compute A/B markings for interpolation, after the trimmed proof
+       (m_result) has been produced. No-op unless interpolation is enabled.
+
+       - Inferred clauses: mark = union of the marks of their antecedents.
+         m_result is in proof order, so every antecedent (which is an earlier
+         clause) is marked before the clause that depends on it (req. 3-4).
+       - Variables: mark = union of the marks of the original (core) clauses
+         in which the variable occurs (req. 5).
+       - Trail: level-0 literals behave like unit clauses, so a literal's
+         trail mark is the mark of its unit clause in the core (req. 6).
+    */
+    void proof_trim::compute_marks() {
+        if (!m_interpolate)
+            return;
+
+        // Index clause literals by id (only real clause additions in the trail).
+        unsigned max_id = m_marks.size();
+        for (auto const& [tid, cl, clp, is_add, is_initial] : m_trail)
+            if (is_add)
+                max_id = std::max(max_id, tid + 1);
+        ptr_vector<literal_vector const> id2lits;
+        id2lits.resize(max_id, nullptr);
+        for (auto const& [tid, cl, clp, is_add, is_initial] : m_trail)
+            if (is_add)
+                id2lits[tid] = &cl;
+
+        m_marks.reserve(max_id, MARK_NONE);
+
+        // Inferred clause marks: union over antecedents, in proof order.
+        for (auto const& [id, deps] : m_result) {
+            if (deps.empty())
+                continue; // original clause: mark already set from input
+            ab_mark m = MARK_NONE;
+            for (unsigned d : deps)
+                m |= clause_mark(d);
+            m_marks[id] = m;
+        }
+
+        // Variable and trail markings.
+        m_var_mark.reset();
+        m_var_mark.resize(num_vars(), MARK_NONE);
+        m_trail_mark.reset();
+        m_trail_mark.resize(num_vars(), MARK_NONE);
+        for (auto const& [id, deps] : m_result) {
+            literal_vector const* lits = id < id2lits.size() ? id2lits[id] : nullptr;
+            if (!lits)
+                continue;
+            // Variable marks accumulate over original (core) clauses only.
+            if (deps.empty())
+                for (literal lit : *lits)
+                    m_var_mark[lit.var()] |= m_marks[id];
+            // Trail marks: level-0 unit clauses (original or inferred).
+            if (lits->size() == 1)
+                m_trail_mark[(*lits)[0].var()] |= m_marks[id];
+        }
+    }
+
     void proof_trim::del(literal_vector const& cl, clause* cp) {
         CTRACE(sat, cp, tout << "del " << *cp << "\n");
         if (cp) 
@@ -251,16 +315,16 @@ namespace sat {
         literal_vector chain_pivots;
         clause_vector chain_clauses;
 
-        literal_vector conf;
-        conf.push_back(s.m_not_l);
-        if (s.m_conflict.is_clause()) {
-            auto & c = s.get_clause(s.m_conflict);
-            conf.append(c.size(), c.begin());
-        }
-        else {
-            conf.push_back(s.m_conflict.get_literal());
-        }
-        conf.push_back(s.m_not_l);
+        // literal_vector conf;
+        // conf.push_back(s.m_not_l);
+        // if (s.m_conflict.is_clause()) {
+        //     auto & c = s.get_clause(s.m_conflict);
+        //     conf.append(c.size(), c.begin());
+        // }
+        // else {
+        //     conf.push_back(s.m_conflict.get_literal());
+        // }
+        // conf.push_back(s.m_not_l);
         
 
         sat::literal l = sat::null_literal;
@@ -349,7 +413,7 @@ namespace sat {
         }
         std::sort(m_clause.begin(), m_clause.end());
         IF_VERBOSE(3, verbose_stream() << "add core {" << m_clause << "}\n");
-        auto& [clauses, id, in_core] = m_clauses.find(m_clause);
+        auto& [clauses, id, in_core, mark] = m_clauses.find(m_clause);
         in_core = true;
         insert_dep(id);
         if (m_clause.size() > 1 && l != null_literal && s.lvl(l) == 0) {
@@ -358,7 +422,7 @@ namespace sat {
                     continue;
                 m_clause2.reset();
                 m_clause2.push_back(s.value(lit) == l_false ? ~lit : lit);
-                auto& [clauses, id, in_core] = m_clauses.insert_if_not_there(m_clause2, {{}, UINT_MAX, true });
+                auto& [clauses, id, in_core, mark] = m_clauses.insert_if_not_there(m_clause2, {{}, UINT_MAX, true });
                 in_core = true;
                 if (id != UINT_MAX)
                     insert_dep(id);
@@ -387,7 +451,7 @@ namespace sat {
         auto* e = m_clauses.find_core(cl);            
         if (!e)
             return cp;
-        auto& [clauses, id, in_core] = e->get_data().m_value;
+        auto& [clauses, id, in_core, mark] = e->get_data().m_value;
         if (!clauses.empty()) {
             cp = clauses.back();
             TRACE(sat, tout << "del: " << *cp << "\n");
@@ -402,26 +466,33 @@ namespace sat {
         s.set_trim();
     }
 
-    void proof_trim::assume(unsigned id, bool is_initial) {
-        std::sort(m_clause.begin(), m_clause.end()); 
+    void proof_trim::assume(unsigned id, bool is_initial, ab_mark mark) {
+        std::sort(m_clause.begin(), m_clause.end());
         unsigned j = 0;
         sat::literal prev = null_literal;
-        for (unsigned i = 0; i < m_clause.size(); ++i) 
+        for (unsigned i = 0; i < m_clause.size(); ++i)
             if (m_clause[i] != prev)
-               prev = m_clause[j++] = m_clause[i];        
+               prev = m_clause[j++] = m_clause[i];
         m_clause.shrink(j);
+        if (m_interpolate) {
+            // Original (assumed) clauses must be marked exactly A or B (req. 2).
+            if (is_initial && !m_clause.empty() && mark != MARK_A && mark != MARK_B)
+                throw default_exception("interpolation requires every original clause to be marked A or B");
+            m_marks.reserve(id + 1, MARK_NONE);
+            m_marks[id] = mark;
+        }
         if (unit_or_binary_occurs())
-            return;        
+            return;
         if (!m_conflict.empty() && m_clause.empty()) {
-            m_clauses.insert(m_clause, { {}, id, m_clause.empty() });
+            m_clauses.insert(m_clause, { {}, id, m_clause.empty(), mark });
             m_trail.push_back({ id , m_clause, nullptr, true, is_initial });
         }
         if (!m_conflict.empty())
-            return;        
+            return;
 
         IF_VERBOSE(3, verbose_stream() << (is_initial?"assume ":"rup ") << m_clause << "\n");
         auto* cl = s.mk_clause(m_clause, status::redundant());
-        auto& [clauses, id2, in_core] = m_clauses.insert_if_not_there(m_clause, { {}, id, m_clause.empty() });
+        auto& [clauses, id2, in_core, mark2] = m_clauses.insert_if_not_there(m_clause, { {}, id, m_clause.empty(), mark });
         if (cl)
             clauses.push_back(cl);
         m_trail.push_back({ id, m_clause, cl, true, is_initial });
@@ -547,58 +618,17 @@ namespace sat {
 
     void proof_trim::replay_proof_with_validation(vector<std::pair<unsigned, unsigned_vector>> const& proof, 
                                                   std::ostream& out) {
-        out << "; === PROOF REPLAY WITH VALIDATION START ===\n";
-        out << "; Validating " << proof.size() << " clauses using proof_replay_validator\n\n";
-        
         // Create validator instance with same parameters as this proof_trim
         // We pass the solver's parameters and resource limit
         params_ref p;
         proof_replay_validator validator(p, s.m_rlimit);
-        
-        // First pass: build up validator state from trail
-        // This ensures validator has same variables and initial state
-        out << "; Building validator state from original trail...\n";
-        
-        for (auto const& [id, deps] : proof) {
-            if (id >= m_trail.size()) {
-                out << "; ERROR: clause id " << id << " out of range\n";
-                continue;
-            }
+        for (unsigned i = validator.num_vars(); i < num_vars(); ++i)
+            validator.mk_var();
 
-            auto const& [trail_id, clause_lits, clause_ptr, is_add, is_initial] = m_trail[id];
-            
-            // Skip clauses not marked as core
-            auto& clause_info = m_clauses.find(clause_lits);
-            if (!clause_info.m_in_core) {
-                out << "; Skipping clause " << id << " (not in core)\n";
-                continue;
-            }
-            
-            // Replicate clause building in validator
-            validator.init_clause();
-            for (auto lit : clause_lits) {
-                validator.add_literal(lit.var(), lit.sign());
-            }
-            
-            if (deps.empty()) {
-                // This is an assumption
-                validator.assume(id, is_initial);
-                out << "; Clause " << id << " (assumption) added to validator\n";
-            } else {
-                // This is an inference
-                validator.infer(id);
-                out << "; Clause " << id << " (inferred from {";
-                for (unsigned i = 0; i < deps.size(); ++i) {
-                    if (i > 0) out << ", ";
-                    out << deps[i];
-                }
-                out << "}) added to validator\n";
-            }
-        }
-        
-        out << "\n; Running validation on trimmed proof...\n";
-        validator.validate_proof(proof, out);
-        
+        logging_proof_visitor v(out);
+        validator.replay(proof, m_trail, v, out, m_has_terminal_empty_clause, m_terminal_empty_clause_id,
+                         m_marks, m_var_mark, m_trail_mark);
+
         out << "\n; Validation Statistics:\n";
         out << "; - Verified clauses: " << validator.get_verified_count() << "\n";
         out << "; - Skipped clauses: " << validator.get_skipped_count() << "\n";
