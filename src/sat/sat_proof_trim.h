@@ -124,5 +124,9 @@ namespace sat {
         
         void replay_proof_with_validation(vector<std::pair<unsigned, unsigned_vector>> const& proof, std::ostream& out);
 
+        // Replay the trimmed proof driving a caller-supplied visitor, passing the
+        // computed A/B markings. Used e.g. to build an interpolant (itp_visitor).
+        void replay_with_visitor(vector<std::pair<unsigned, unsigned_vector>> const& proof, proof_visitor& v, std::ostream& out);
+
     };
 }

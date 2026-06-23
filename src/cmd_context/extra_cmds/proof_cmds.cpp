@@ -49,6 +49,8 @@ Proof checker for clauses created during search.
 #include "sat/sat_drat.h"
 #include "sat/sat_proof_trim.h"
 #include "sat/smt/euf_proof_checker.h"
+#include "sat/smt/itp_visitor.h"
+#include "ast/ast_pp.h"
 #include "cmd_context/cmd_context.h"
 #include "params/solver_params.hpp"
 #include <iostream>
@@ -193,6 +195,12 @@ public:
         if (replay) {
             //trim.replay_proof(ids, out);
             trim.replay_proof_with_validation(ids, out);
+        }
+        if (trim.interpolate()) {
+            sat::itp_visitor itp(m);
+            trim.replay_with_visitor(ids, itp, out);
+            expr_ref interpolant = itp.get_interpolant();
+            out << "; interpolant: " << mk_pp(interpolant, m) << "\n";
         }
         for (auto const& [id, deps] : ids) {
             auto& clause = m_clauses[id];

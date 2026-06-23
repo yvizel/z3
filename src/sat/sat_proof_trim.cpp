@@ -634,4 +634,14 @@ namespace sat {
         out << "; - Skipped clauses: " << validator.get_skipped_count() << "\n";
         out << "; === PROOF REPLAY WITH VALIDATION COMPLETE ===\n";
     }
+
+    void proof_trim::replay_with_visitor(vector<std::pair<unsigned, unsigned_vector>> const& proof,
+                                         proof_visitor& v, std::ostream& out) {
+        params_ref p;
+        proof_replay_validator validator(p, s.m_rlimit);
+        for (unsigned i = validator.num_vars(); i < num_vars(); ++i)
+            validator.mk_var();
+        validator.replay(proof, m_trail, v, out, m_has_terminal_empty_clause, m_terminal_empty_clause_id,
+                         m_marks, m_var_mark, m_trail_mark);
+    }
 }
