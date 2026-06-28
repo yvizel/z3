@@ -43,6 +43,7 @@ Author:
 #include "ast/ast.h"
 #include "sat/proof_visitor.h"
 #include "util/map.h"
+#include "util/obj_hashtable.h"
 #include "util/hash.h"
 
 namespace sat {
@@ -73,6 +74,13 @@ namespace sat {
         // plain input clause, and is labelled by a theory-specific procedure.
         u_map<expr*> m_theory_hint;
 
+        // A/B coloring of EUF terms (atoms-only for now). An uninterpreted symbol is
+        // marked by the union of the marks of the atoms it occurs in; AB means the
+        // symbol occurs on both sides (shared/common). A term's color is derived from
+        // its symbols. Interpreted/theory symbols are common and not colored.
+        obj_map<func_decl, ab_mark> m_sym_mark;    // uninterpreted symbol -> A/B/AB
+        obj_map<expr, ab_mark>      m_term_mark;   // memoized term color (union of symbol marks)
+
         expr*    m_true = nullptr;
         expr*    m_false = nullptr;
         expr_ref m_interpolant;
@@ -95,6 +103,9 @@ namespace sat {
         bool is_theory(unsigned id) const { return m_theory_hint.contains(id); }
         expr* mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark);
 
+        void compute_symbol_marks();
+        void mark_symbols(expr* atom, ab_mark mk);
+
     public:
         itp_visitor(ast_manager& m):
             m(m), m_atom_refs(m), m_pinned(m), m_interpolant(m) {
@@ -114,6 +125,11 @@ namespace sat {
 
         // The computed interpolant (valid after replay reaches the empty clause).
         expr_ref get_interpolant() const { return m_interpolant; }
+
+        // A/B coloring queries (AB = shared/common). Valid after visit_marks.
+        ab_mark symbol_mark(func_decl* f) const;  // uninterpreted symbol color
+        ab_mark term_mark(expr* t);               // union of the term's symbol colors
+        bool is_ab_common(expr* t);               // every uninterpreted symbol in t is shared
 
         void visit_marks(svector<ab_mark> const& var_marks, svector<ab_mark> const& trail_marks) override;
         void visit_assumption(unsigned id, literal_vector const& clause, ab_mark mark = MARK_NONE) override;

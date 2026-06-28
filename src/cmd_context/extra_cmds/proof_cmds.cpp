@@ -205,6 +205,15 @@ public:
         }
         if (trim.interpolate()) {
             sat::itp_visitor itp(m);
+            // Provide the real boolean atoms (bool_var == atom id) so that term/symbol
+            // coloring is over the actual EUF terms.
+            for (auto const& clause : m_clauses)
+                for (expr* e : clause)
+                    if (m.is_bool(e)) {
+                        expr* atom = e;
+                        m.is_not(atom, atom);
+                        itp.set_atom(atom->get_id(), atom);
+                    }
             for (auto const& kv : m_theory_hints)
                 itp.register_theory_clause(kv.m_key, kv.m_value);
             trim.replay_with_visitor(ids, itp, out);

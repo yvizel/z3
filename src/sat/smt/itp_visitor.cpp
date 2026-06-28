@@ -23,6 +23,8 @@ namespace sat {
     void itp_visitor::set_atom(bool_var v, expr* a) {
         SASSERT(a && m.is_bool(a));
         m_atoms.reserve(v + 1, nullptr);
+        if (m_atoms[v] == a)
+            return;
         m_atom_refs.push_back(a);
         m_atoms[v] = a;
     }
@@ -127,6 +129,92 @@ namespace sat {
         m_var_mark.append(var_marks);
         m_atoms.reserve(var_marks.size(), nullptr);
         m_unit_label.reserve(var_marks.size(), nullptr);
+        compute_symbol_marks();
+    }
+
+    // Color uninterpreted symbols by the marks of the atoms they occur in
+    // (atoms-only). A symbol seen on both sides becomes AB (shared).
+    void itp_visitor::compute_symbol_marks() {
+        m_sym_mark.reset();
+        m_term_mark.reset();
+        for (unsigned v = 0; v < m_atoms.size(); ++v) {
+            expr* a = m_atoms[v];
+            ab_mark mk = var_mark(v);
+            if (a && mk != MARK_NONE)
+                mark_symbols(a, mk);
+        }
+        IF_VERBOSE(2, {
+            verbose_stream() << "itp symbol marks:";
+            for (auto const& kv : m_sym_mark)
+                verbose_stream() << " " << kv.m_key->get_name() << "=" << ab_mark_to_string(kv.m_value);
+            verbose_stream() << "\n";
+        });
+    }
+
+    void itp_visitor::mark_symbols(expr* e, ab_mark mk) {
+        ptr_vector<expr> todo;
+        todo.push_back(e);
+        while (!todo.empty()) {
+            expr* c = todo.back();
+            todo.pop_back();
+            if (!is_app(c))
+                continue;
+            app* a = to_app(c);
+            func_decl* f = a->get_decl();
+            if (f->get_family_id() == null_family_id) {  // uninterpreted only
+                ab_mark cur = MARK_NONE;
+                m_sym_mark.find(f, cur);
+                m_sym_mark.insert(f, cur | mk);
+            }
+            for (expr* arg : *a)
+                todo.push_back(arg);
+        }
+    }
+
+    ab_mark itp_visitor::symbol_mark(func_decl* f) const {
+        ab_mark m0 = MARK_NONE;
+        m_sym_mark.find(f, m0);
+        return m0;
+    }
+
+    ab_mark itp_visitor::term_mark(expr* t) {
+        ab_mark memo = MARK_NONE;
+        if (m_term_mark.find(t, memo))
+            return memo;
+        ab_mark res = MARK_NONE;
+        ptr_vector<expr> todo;
+        todo.push_back(t);
+        while (!todo.empty()) {
+            expr* c = todo.back();
+            todo.pop_back();
+            if (!is_app(c))
+                continue;
+            app* a = to_app(c);
+            if (a->get_decl()->get_family_id() == null_family_id)
+                res |= symbol_mark(a->get_decl());
+            for (expr* arg : *a)
+                todo.push_back(arg);
+        }
+        m_term_mark.insert(t, res);
+        return res;
+    }
+
+    bool itp_visitor::is_ab_common(expr* t) {
+        ptr_vector<expr> todo;
+        todo.push_back(t);
+        while (!todo.empty()) {
+            expr* c = todo.back();
+            todo.pop_back();
+            if (!is_app(c))
+                continue;
+            app* a = to_app(c);
+            func_decl* f = a->get_decl();
+            if (f->get_family_id() == null_family_id && symbol_mark(f) != MARK_AB)
+                return false;
+            for (expr* arg : *a)
+                todo.push_back(arg);
+        }
+        return true;
     }
 
     void itp_visitor::register_theory_clause(unsigned id, expr* hint) {
