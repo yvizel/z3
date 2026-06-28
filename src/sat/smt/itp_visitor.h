@@ -105,6 +105,7 @@ namespace sat {
 
         void compute_symbol_marks();
         void mark_symbols(expr* atom, ab_mark mk);
+        bool has_b_local_symbol(expr* t);  // t contains a symbol tagged B (MARK_B)
 
     public:
         itp_visitor(ast_manager& m):
@@ -130,6 +131,13 @@ namespace sat {
         ab_mark symbol_mark(func_decl* f) const;  // uninterpreted symbol color
         ab_mark term_mark(expr* t);               // union of the term's symbol colors
         bool is_ab_common(expr* t);               // every uninterpreted symbol in t is shared
+
+        // Negate a theory clause and split the resulting conjunction of literals into
+        // the (alpha, beta) interpolation pair: a literal goes to beta iff its atom
+        // contains a B-local symbol, otherwise to alpha. The conjunction of alpha and
+        // of beta is unsatisfiable (the clause is theory-valid), so an interpolant of
+        // (alpha, beta) is the clause's partial interpolant.
+        void split_theory_clause(literal_vector const& clause, expr_ref_vector& alpha, expr_ref_vector& beta);
 
         void visit_marks(svector<ab_mark> const& var_marks, svector<ab_mark> const& trail_marks) override;
         void visit_assumption(unsigned id, literal_vector const& clause, ab_mark mark = MARK_NONE) override;

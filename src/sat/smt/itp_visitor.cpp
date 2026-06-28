@@ -199,6 +199,36 @@ namespace sat {
         return res;
     }
 
+    bool itp_visitor::has_b_local_symbol(expr* t) {
+        ptr_vector<expr> todo;
+        todo.push_back(t);
+        while (!todo.empty()) {
+            expr* c = todo.back();
+            todo.pop_back();
+            if (!is_app(c))
+                continue;
+            app* a = to_app(c);
+            func_decl* f = a->get_decl();
+            if (f->get_family_id() == null_family_id && symbol_mark(f) == MARK_B)
+                return true;
+            for (expr* arg : *a)
+                todo.push_back(arg);
+        }
+        return false;
+    }
+
+    void itp_visitor::split_theory_clause(literal_vector const& clause, expr_ref_vector& alpha, expr_ref_vector& beta) {
+        for (literal l : clause) {
+            // Conjunct of the negated clause is the negated literal ~l.
+            expr* conj = lit2expr(~l);
+            // Classify by the atom's symbols: beta iff it mentions a B-local symbol.
+            if (has_b_local_symbol(atom(l.var())))
+                beta.push_back(conj);
+            else
+                alpha.push_back(conj);
+        }
+    }
+
     bool itp_visitor::is_ab_common(expr* t) {
         ptr_vector<expr> todo;
         todo.push_back(t);
@@ -226,11 +256,20 @@ namespace sat {
     // reasoning, so its interpolant is given by a theory-specific procedure
     // reading `hint`, not by the generic shared-literal projection.
     expr* itp_visitor::mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark) {
-        // TODO(EUF): dispatch on the hint (e.g. to_app(hint)->get_name() == "euf"/"cc")
-        // and compute the EUF theory-lemma interpolant. Until then fall back to the
-        // generic leaf labelling so the interpolant stays well-formed.
-        IF_VERBOSE(2, verbose_stream() << "itp: theory clause " << id
-                   << " hint " << mk_pp(hint, m) << " (generic leaf for now)\n");
+        // Split the negated clause into the (alpha, beta) interpolation pair.
+        expr_ref_vector alpha(m), beta(m);
+        split_theory_clause(clause, alpha, beta);
+        IF_VERBOSE(2, {
+            verbose_stream() << "itp: theory clause " << id << " hint " << mk_pp(hint, m) << "\n";
+            verbose_stream() << "  alpha:";
+            for (expr* e : alpha) verbose_stream() << " " << mk_pp(e, m);
+            verbose_stream() << "\n  beta:";
+            for (expr* e : beta) verbose_stream() << " " << mk_pp(e, m);
+            verbose_stream() << "\n";
+        });
+        // TODO(EUF): partial interpolant = interpolant(alpha, beta) computed by the
+        // EUF interpolation procedure. Until then fall back to the generic leaf so the
+        // interpolant stays well-formed.
         return mk_leaf(clause, mark);
     }
 
