@@ -65,6 +65,7 @@ class proof_trim {
     euf::theory_checker     m_checker;
     vector<expr_ref_vector> m_clauses;
     bool_vector             m_is_infer;
+    u_map<expr*>            m_theory_hints;   // clause id -> theory proof hint (e.g. EUF)
     symbol                  m_rup;
     bool                    m_empty = false;
     bool                    m_replay = false;
@@ -138,7 +139,9 @@ public:
             if (clause1.size() != clause.size()) {
                 mk_clause(clause1);
                 clause1.push_back(hint);
-                trim.assume(m_clauses.size(), true, mark);
+                unsigned id = m_clauses.size();
+                trim.assume(id, true, mark);
+                m_theory_hints.insert(id, hint);  // theory lemma
                 m_clauses.push_back(clause1);
                 m_is_infer.push_back(true);
 
@@ -157,10 +160,14 @@ public:
 
 
         mk_clause(clause);
+        unsigned id = m_clauses.size();
         if (is_rup(hint))
-            trim.infer(m_clauses.size());
-        else
-            trim.assume(m_clauses.size(), true, mark);
+            trim.infer(id);
+        else {
+            trim.assume(id, true, mark);
+            if (hint)
+                m_theory_hints.insert(id, hint);  // theory lemma
+        }
         m_clauses.push_back(clause);
         if (hint)
             m_clauses.back().push_back(hint);
@@ -198,6 +205,8 @@ public:
         }
         if (trim.interpolate()) {
             sat::itp_visitor itp(m);
+            for (auto const& kv : m_theory_hints)
+                itp.register_theory_clause(kv.m_key, kv.m_value);
             trim.replay_with_visitor(ids, itp, out);
             expr_ref interpolant = itp.get_interpolant();
             out << "; interpolant: " << mk_pp(interpolant, m) << "\n";

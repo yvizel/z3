@@ -16,6 +16,7 @@ Author:
 --*/
 
 #include "sat/smt/itp_visitor.h"
+#include "ast/ast_pp.h"
 
 namespace sat {
 
@@ -128,8 +129,27 @@ namespace sat {
         m_unit_label.reserve(var_marks.size(), nullptr);
     }
 
-    void itp_visitor::visit_assumption(unsigned, literal_vector const& clause, ab_mark mark) {
-        set_clause_label(clause, mk_leaf(clause, mark));
+    void itp_visitor::register_theory_clause(unsigned id, expr* hint) {
+        m_theory_hint.insert(id, hint);
+    }
+
+    // Partial interpolant of a theory lemma. Unlike a plain input clause, a
+    // theory lemma (e.g. an EUF congruence/transitivity step) may mix A and B
+    // reasoning, so its interpolant is given by a theory-specific procedure
+    // reading `hint`, not by the generic shared-literal projection.
+    expr* itp_visitor::mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark) {
+        // TODO(EUF): dispatch on the hint (e.g. to_app(hint)->get_name() == "euf"/"cc")
+        // and compute the EUF theory-lemma interpolant. Until then fall back to the
+        // generic leaf labelling so the interpolant stays well-formed.
+        IF_VERBOSE(2, verbose_stream() << "itp: theory clause " << id
+                   << " hint " << mk_pp(hint, m) << " (generic leaf for now)\n");
+        return mk_leaf(clause, mark);
+    }
+
+    void itp_visitor::visit_assumption(unsigned id, literal_vector const& clause, ab_mark mark) {
+        expr* label = is_theory(id) ? mk_theory_leaf(id, clause, m_theory_hint[id], mark)
+                                    : mk_leaf(clause, mark);
+        set_clause_label(clause, label);
     }
 
     void itp_visitor::visit_inference(unsigned, literal_vector const&, unsigned_vector const&, ab_mark) {

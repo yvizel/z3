@@ -68,6 +68,11 @@ namespace sat {
         // normalized clause literals -> partial interpolant label (borrowed; pinned in m_pinned)
         map<literal_vector, expr*, lits_hash, lits_eq> m_clause_label;
 
+        // clause id -> theory proof hint (borrowed; owned by the proof command layer).
+        // An assumption registered here is a theory lemma (e.g. EUF) rather than a
+        // plain input clause, and is labelled by a theory-specific procedure.
+        u_map<expr*> m_theory_hint;
+
         expr*    m_true = nullptr;
         expr*    m_false = nullptr;
         expr_ref m_interpolant;
@@ -87,6 +92,9 @@ namespace sat {
         expr* clause_label(literal_vector const& lits);
         void set_clause_label(literal_vector const& lits, expr* label);
 
+        bool is_theory(unsigned id) const { return m_theory_hint.contains(id); }
+        expr* mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark);
+
     public:
         itp_visitor(ast_manager& m):
             m(m), m_atom_refs(m), m_pinned(m), m_interpolant(m) {
@@ -98,6 +106,11 @@ namespace sat {
 
         // Inject a real atom for a variable (e.g. an EUF equality) before replay.
         void set_atom(bool_var v, expr* a);
+
+        // Register an assumption as a theory lemma carrying its proof hint, so that
+        // replay can apply theory-specific (e.g. EUF) interpolation to it. Must be
+        // called before replay. The hint is borrowed and must outlive replay.
+        void register_theory_clause(unsigned id, expr* hint);
 
         // The computed interpolant (valid after replay reaches the empty clause).
         expr_ref get_interpolant() const { return m_interpolant; }
