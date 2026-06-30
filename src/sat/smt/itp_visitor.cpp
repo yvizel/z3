@@ -16,6 +16,7 @@ Author:
 --*/
 
 #include "sat/smt/itp_visitor.h"
+#include "sat/smt/euf_interpolator.h"
 #include "ast/ast_pp.h"
 
 namespace sat {
@@ -136,7 +137,6 @@ namespace sat {
     // (atoms-only). A symbol seen on both sides becomes AB (shared).
     void itp_visitor::compute_symbol_marks() {
         m_sym_mark.reset();
-        m_term_mark.reset();
         for (unsigned v = 0; v < m_atoms.size(); ++v) {
             expr* a = m_atoms[v];
             ab_mark mk = var_mark(v);
@@ -177,76 +177,6 @@ namespace sat {
         return m0;
     }
 
-    ab_mark itp_visitor::term_mark(expr* t) {
-        ab_mark memo = MARK_NONE;
-        if (m_term_mark.find(t, memo))
-            return memo;
-        ab_mark res = MARK_NONE;
-        ptr_vector<expr> todo;
-        todo.push_back(t);
-        while (!todo.empty()) {
-            expr* c = todo.back();
-            todo.pop_back();
-            if (!is_app(c))
-                continue;
-            app* a = to_app(c);
-            if (a->get_decl()->get_family_id() == null_family_id)
-                res |= symbol_mark(a->get_decl());
-            for (expr* arg : *a)
-                todo.push_back(arg);
-        }
-        m_term_mark.insert(t, res);
-        return res;
-    }
-
-    bool itp_visitor::has_b_local_symbol(expr* t) {
-        ptr_vector<expr> todo;
-        todo.push_back(t);
-        while (!todo.empty()) {
-            expr* c = todo.back();
-            todo.pop_back();
-            if (!is_app(c))
-                continue;
-            app* a = to_app(c);
-            func_decl* f = a->get_decl();
-            if (f->get_family_id() == null_family_id && symbol_mark(f) == MARK_B)
-                return true;
-            for (expr* arg : *a)
-                todo.push_back(arg);
-        }
-        return false;
-    }
-
-    void itp_visitor::split_theory_clause(literal_vector const& clause, expr_ref_vector& alpha, expr_ref_vector& beta) {
-        for (literal l : clause) {
-            // Conjunct of the negated clause is the negated literal ~l.
-            expr* conj = lit2expr(~l);
-            // Classify by the atom's symbols: beta iff it mentions a B-local symbol.
-            if (has_b_local_symbol(atom(l.var())))
-                beta.push_back(conj);
-            else
-                alpha.push_back(conj);
-        }
-    }
-
-    bool itp_visitor::is_ab_common(expr* t) {
-        ptr_vector<expr> todo;
-        todo.push_back(t);
-        while (!todo.empty()) {
-            expr* c = todo.back();
-            todo.pop_back();
-            if (!is_app(c))
-                continue;
-            app* a = to_app(c);
-            func_decl* f = a->get_decl();
-            if (f->get_family_id() == null_family_id && symbol_mark(f) != MARK_AB)
-                return false;
-            for (expr* arg : *a)
-                todo.push_back(arg);
-        }
-        return true;
-    }
-
     void itp_visitor::register_theory_clause(unsigned id, expr* hint) {
         m_theory_hint.insert(id, hint);
     }
@@ -255,21 +185,37 @@ namespace sat {
     // theory lemma (e.g. an EUF congruence/transitivity step) may mix A and B
     // reasoning, so its interpolant is given by a theory-specific procedure
     // reading `hint`, not by the generic shared-literal projection.
+    // Parse the negated theory clause into an (A, B) pair and delegate to the
+    // shared-consequence EUF interpolator. A literal is in B (beta) iff its atom
+    // contains a B-local symbol; otherwise A (alpha).
+    expr_ref itp_visitor::euf_interpolant(literal_vector const& clause) {
+        svector<euf_interpolator::atom> atoms;
+        for (literal l : clause) {
+            expr* atom = m_atoms.get(l.var(), nullptr);
+            expr* s = nullptr, * t = nullptr;
+            if (!atom || !m.is_eq(atom, s, t))
+                return expr_ref(m);  // unsupported atom -> caller falls back
+            // The conjunct of the negated clause is ~l; it is a disequality iff
+            // the clause literal is positive.
+            bool is_diseq = !l.sign();
+            // Classify by the atom's clause origin: a B-only atom is in beta,
+            // an A-only or shared atom in alpha. (Symbol-based classification
+            // fails when a B clause is over purely shared symbols.)
+            bool is_a = (var_mark(l.var()) != MARK_B);
+            atoms.push_back({ s, t, is_diseq, is_a });
+        }
+        euf_interpolator itp(m);
+        return itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); });
+    }
+
     expr* itp_visitor::mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark) {
-        // Split the negated clause into the (alpha, beta) interpolation pair.
-        expr_ref_vector alpha(m), beta(m);
-        split_theory_clause(clause, alpha, beta);
-        IF_VERBOSE(2, {
-            verbose_stream() << "itp: theory clause " << id << " hint " << mk_pp(hint, m) << "\n";
-            verbose_stream() << "  alpha:";
-            for (expr* e : alpha) verbose_stream() << " " << mk_pp(e, m);
-            verbose_stream() << "\n  beta:";
-            for (expr* e : beta) verbose_stream() << " " << mk_pp(e, m);
-            verbose_stream() << "\n";
-        });
-        // TODO(EUF): partial interpolant = interpolant(alpha, beta) computed by the
-        // EUF interpolation procedure. Until then fall back to the generic leaf so the
-        // interpolant stays well-formed.
+        expr_ref itp = euf_interpolant(clause);
+        IF_VERBOSE(2, verbose_stream() << "itp: theory clause " << id << " hint " << mk_pp(hint, m)
+                   << "\n  partial interpolant: " << (itp ? mk_pp(itp, m) : mk_pp(m.mk_true(), m)) << "\n");
+        // Use the EUF partial interpolant when available; otherwise fall back to the
+        // generic leaf so the overall interpolant stays well-formed.
+        if (itp)
+            return pin(itp);
         return mk_leaf(clause, mark);
     }
 

@@ -303,6 +303,7 @@ public:
     void push_params() override { s->push_params(); }
     void pop_params() override { s->pop_params(); }
     void set_produce_models(bool f) override { s->set_produce_models(f); }
+    void set_itp_group(unsigned g) override { s->set_itp_group(g); }
     void set_phase(expr* e) override { s->set_phase(e); }
     void move_to_front(expr* e) override { s->move_to_front(e); }
     phase* get_phase() override { return s->get_phase(); }

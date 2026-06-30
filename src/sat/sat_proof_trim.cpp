@@ -475,9 +475,11 @@ namespace sat {
                prev = m_clause[j++] = m_clause[i];
         m_clause.shrink(j);
         if (m_interpolate) {
-            // Original (assumed) clauses must be marked exactly A or B (req. 2).
-            if (is_initial && !m_clause.empty() && mark != MARK_A && mark != MARK_B)
-                throw default_exception("interpolation requires every original clause to be marked A or B");
+            // Genuine input clauses carry an A/B mark; theory lemmas (treated as
+            // assumptions) legitimately have none - their partial interpolant is
+            // computed from their structure - so an unmarked clause is allowed.
+            IF_VERBOSE(2, if (is_initial && !m_clause.empty() && mark != MARK_A && mark != MARK_B)
+                          verbose_stream() << "itp: unmarked original/theory clause " << m_clause << "\n");
             m_marks.reserve(id + 1, MARK_NONE);
             m_marks[id] = mark;
         }

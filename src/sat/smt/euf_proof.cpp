@@ -468,7 +468,14 @@ namespace euf {
     }
     
     void solver::display_assume(std::ostream& out, unsigned n, literal const* lits) {
-        display_literals(out << "(assume", n, lits) << ")\n";        
+        if (m_itp_group != 0) {
+            // Tag the input clause with its A/B interpolation group.
+            app_ref mark(m.mk_const(m_itp_group == 1 ? symbol("__itp_A") : symbol("__itp_B"), m.mk_proof_sort()), m);
+            visit_expr(out, mark);
+            display_hint(display_literals(out << "(assume", n, lits), mark) << ")\n";
+            return;
+        }
+        display_literals(out << "(assume", n, lits) << ")\n";
     }
 
     void solver::display_inferred(std::ostream& out, unsigned n, literal const* lits, expr* proof_hint) {

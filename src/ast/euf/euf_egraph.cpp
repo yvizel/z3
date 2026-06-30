@@ -518,6 +518,11 @@ namespace euf {
         if (r1 == r2)
             return;
 
+        // Mark only direct (input) equality merges, not congruence-derived ones:
+        // the summarizer must re-derive a congruence's colorability itself.
+        if (m_mark_js && !j.is_congruence())
+            j.set_mark(true);
+
         TRACE(euf, j.display(tout << "merge: " << bpp(n1) << " == " << bpp(n2) << " ", m_display_justification) << "\n" << bpp(r1) << " " << bpp(r2) << "\n";);
         IF_VERBOSE(20, j.display(verbose_stream() << "merge: " << bpp(n1) << " == " << bpp(n2) << " ", m_display_justification) << "\n";);
         force_push();
@@ -1036,6 +1041,11 @@ template void euf::egraph::explain(ptr_vector<expr_dependency>& justifications, 
 template void euf::egraph::explain_todo(ptr_vector<expr_dependency>& justifications, cc_justification*);
 template void euf::egraph::explain_eq(ptr_vector<expr_dependency>& justifications, cc_justification*, enode* a, enode* b);
 template unsigned euf::egraph::explain_diseq(ptr_vector<expr_dependency>& justifications, cc_justification*, enode* a, enode* b);
+
+template void euf::egraph::explain(ptr_vector<expr>& justifications, cc_justification*);
+template void euf::egraph::explain_todo(ptr_vector<expr>& justifications, cc_justification*);
+template void euf::egraph::explain_eq(ptr_vector<expr>& justifications, cc_justification*, enode* a, enode* b);
+template unsigned euf::egraph::explain_diseq(ptr_vector<expr>& justifications, cc_justification*, enode* a, enode* b);
 
 
 #if 0

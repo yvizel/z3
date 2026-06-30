@@ -16,5 +16,7 @@ def_module_params('solver',
                           ('proof.trim', BOOL, False, 'trim and save proof into a proof object that an be extracted using (get-proof)'),
                           ('proof.replay', BOOL, False, 'replay proof after trimming'),
                           ('proof.interpolate', BOOL, False, 'compute A/B clause and variable markings during proof trimming for interpolation'),
+                          ('proof.interpolate_log', BOOL, False, 'when logging a clause proof, emit A/B (__itp_A/__itp_B) markings on input clauses according to their (set-itp-group ...) partition'),
+                          ('proof.check_interpolant', BOOL, False, 'after computing an interpolant during proof replay, verify that A implies it, that it is inconsistent with B, and that it only uses shared symbols'),
                           ))
                 

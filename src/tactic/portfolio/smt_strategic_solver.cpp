@@ -43,6 +43,7 @@ Notes:
 #include "sat/sat_solver/inc_sat_solver.h"
 #include "sat/sat_solver/sat_smt_solver.h"
 #include "ast/rewriter/bv_rewriter.h"
+#include "params/solver_params.hpp"
 #include "solver/solver2tactic.h"
 #include "solver/parallel_tactical.h"
 #include "solver/parallel_params.hpp"
@@ -163,6 +164,11 @@ public:
             l = m_logic;
         else
             l = logic;
+
+        // Interpolation proof logging requires the inc_sat_solver path so that
+        // input clauses are internalized per A/B group and marked accordingly.
+        if (solver_params(p).proof_interpolate_log())
+            return mk_inc_sat_solver(m, p);
 
         tactic_params tp;
         tactic_ref t;

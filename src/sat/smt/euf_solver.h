@@ -446,6 +446,11 @@ namespace euf {
 
         scoped_ptr<std::ostream> m_proof_out;
 
+        // Interpolation A/B group of the input clauses currently being internalized
+        // (0 = none, 1 = A, 2 = B). When non-zero, the clause proof emits an
+        // __itp_A/__itp_B marking on (assume ...) lines.
+        unsigned m_itp_group = 0;
+
         // decompile
         bool extract_pb(std::function<void(unsigned sz, literal const* c, unsigned k)>& card,
             std::function<void(unsigned sz, literal const* c, unsigned const* coeffs, unsigned k)>& pb) override;
@@ -513,6 +518,10 @@ namespace euf {
 
         // diagnostics
         func_decl_ref_vector const& unhandled_functions() { return m_unhandled_functions; }
+
+        // interpolation: set the A/B group (0=none, 1=A, 2=B) of input clauses
+        // internalized while this is set; emitted on (assume ...) lines in the proof.
+        void set_itp_group(unsigned g) { m_itp_group = g; }
 
         // clause tracing
         void register_on_clause(

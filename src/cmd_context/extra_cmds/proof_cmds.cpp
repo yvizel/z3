@@ -51,6 +51,9 @@ Proof checker for clauses created during search.
 #include "sat/smt/euf_proof_checker.h"
 #include "sat/smt/itp_visitor.h"
 #include "ast/ast_pp.h"
+#include "ast/rewriter/th_rewriter.h"
+#include "solver/solver.h"
+#include "util/obj_hashtable.h"
 #include "cmd_context/cmd_context.h"
 #include "params/solver_params.hpp"
 #include <iostream>
@@ -66,9 +69,12 @@ class proof_trim {
     vector<expr_ref_vector> m_clauses;
     bool_vector             m_is_infer;
     u_map<expr*>            m_theory_hints;   // clause id -> theory proof hint (e.g. EUF)
+    expr_ref_vector         m_A;              // A-partition input clauses (for interpolant validity checking)
+    expr_ref_vector         m_B;              // B-partition input clauses
     symbol                  m_rup;
     bool                    m_empty = false;
     bool                    m_replay = false;
+    bool                    m_check_interpolant = false;
     
     void mk_clause(expr_ref_vector const& clause) {
         trim.init_clause();
@@ -96,19 +102,30 @@ public:
         // ctx(ctx),
         m(ctx.m()),
         trim(gparams::get_module("sat"), m.limit()),
-        m_checker(m) {
+        m_checker(m),
+        m_A(m),
+        m_B(m) {
         m_rup = symbol("rup");
     }
-    
+
     void assume(expr_ref_vector const& clause, sat::ab_mark mark = sat::MARK_NONE) {
         mk_clause(clause);
         trim.assume(m_clauses.size(), true, mark);
         m_clauses.push_back(clause);
         m_is_infer.push_back(false);
+        // Track A/B input clauses for interpolant validity checking.
+        if (mark == sat::MARK_A)
+            m_A.push_back(mk_or(clause));
+        else if (mark == sat::MARK_B)
+            m_B.push_back(mk_or(clause));
     }
 
     void set_interpolate(bool b) {
         trim.set_interpolate(b);
+    }
+
+    void set_check_interpolant(bool b) {
+        m_check_interpolant = b;
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -195,6 +212,71 @@ public:
         return expr_ref(m.mk_app(symbol("deps"), args.size(), args.data(), m.mk_proof_sort()), m);
     }
 
+    // Collect the uninterpreted function/constant symbols occurring in e.
+    void collect_ufuncs(expr* e, obj_hashtable<func_decl>& fns) {
+        ptr_vector<expr> todo;
+        obj_hashtable<expr> seen;
+        todo.push_back(e);
+        while (!todo.empty()) {
+            expr* c = todo.back();
+            todo.pop_back();
+            if (seen.contains(c))
+                continue;
+            seen.insert(c);
+            if (!is_app(c))
+                continue;
+            app* a = to_app(c);
+            if (a->get_family_id() == null_family_id)
+                fns.insert(a->get_decl());
+            for (expr* arg : *a)
+                todo.push_back(arg);
+        }
+    }
+
+    // Verify the computed interpolant I for the (A, B) pair:
+    //   (1) A => I, (2) I /\ B is unsatisfiable, (3) I uses only shared symbols.
+    void check_interpolant(expr* itp, std::ostream& out) {
+        expr_ref A(mk_and(m_A), m);
+        expr_ref B(mk_and(m_B), m);
+        params_ref p;
+
+        // (1) A => I, i.e. A /\ not I is unsatisfiable.
+        {
+            solver_ref s = mk_smt_solver(m, p, symbol::null);
+            s->assert_expr(A);
+            s->assert_expr(m.mk_not(itp));
+            lbool r = s->check_sat();
+            out << "; check A => interpolant: "
+                << (r == l_false ? "passed" : r == l_true ? "FAILED (A does not imply interpolant)" : "unknown") << "\n";
+        }
+
+        // (2) I /\ B is unsatisfiable.
+        {
+            solver_ref s = mk_smt_solver(m, p, symbol::null);
+            s->assert_expr(B);
+            s->assert_expr(itp);
+            lbool r = s->check_sat();
+            out << "; check interpolant /\\ B unsat: "
+                << (r == l_false ? "passed" : r == l_true ? "FAILED (interpolant consistent with B)" : "unknown") << "\n";
+        }
+
+        // (3) interpolant only uses symbols shared by A and B.
+        {
+            obj_hashtable<func_decl> fa, fb, fi;
+            for (expr* cl : m_A) collect_ufuncs(cl, fa);
+            for (expr* cl : m_B) collect_ufuncs(cl, fb);
+            collect_ufuncs(itp, fi);
+            bool ok = true;
+            for (func_decl* f : fi) {
+                if (!fa.contains(f) || !fb.contains(f)) {
+                    ok = false;
+                    out << ";   interpolant uses non-shared symbol " << f->get_name() << "\n";
+                }
+            }
+            out << "; check interpolant shared symbols only: " << (ok ? "passed" : "FAILED") << "\n";
+        }
+    }
+
     void do_trim(std::ostream& out, bool replay) {
         ast_pp_util pp(m);
         auto ids = trim.trim();
@@ -218,7 +300,16 @@ public:
                 itp.register_theory_clause(kv.m_key, kv.m_value);
             trim.replay_with_visitor(ids, itp, out);
             expr_ref interpolant = itp.get_interpolant();
+            // Simplify the interpolant expression before reporting it.
+            if (interpolant) {
+                th_rewriter rw(m);
+                expr_ref simplified(m);
+                rw(interpolant, simplified);
+                interpolant = simplified;
+            }
             out << "; interpolant: " << mk_pp(interpolant, m) << "\n";
+            if (m_check_interpolant && interpolant)
+                check_interpolant(interpolant, out);
         }
         for (auto const& [id, deps] : ids) {
             auto& clause = m_clauses[id];
@@ -419,6 +510,7 @@ public:
             trim().updt_params(p);
             trim().set_replay(m_replay);
             trim().set_interpolate(m_interpolate);
+            trim().set_check_interpolant(sp.proof_check_interpolant());
         }
     }
 

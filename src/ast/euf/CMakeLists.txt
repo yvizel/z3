@@ -10,6 +10,7 @@ z3_add_component(euf
     euf_mam.cpp
     euf_plugin.cpp
     euf_specrel_plugin.cpp
+    euf_summary.cpp
     ho_matcher.cpp
   COMPONENT_DEPENDENCIES
     ast

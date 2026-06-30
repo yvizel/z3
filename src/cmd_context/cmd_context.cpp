@@ -1594,10 +1594,13 @@ void cmd_context::assert_expr(expr * t) {
     m_check_sat_result = nullptr;
     m().inc_ref(t);
     m_assertions.push_back(t);
+    m_assertion_itp_groups.push_back(m_itp_group);
     if (produce_unsat_cores())
         m_assertion_names.push_back(nullptr);
-    if (m_solver)
+    if (m_solver) {
+        m_solver->set_itp_group(m_itp_group);
         m_solver->assert_expr(t);
+    }
 }
 
 void cmd_context::assert_expr(symbol const & name, expr * t) {
@@ -1612,11 +1615,14 @@ void cmd_context::assert_expr(symbol const & name, expr * t) {
     m_check_sat_result = nullptr;
     m().inc_ref(t);
     m_assertions.push_back(t);
+    m_assertion_itp_groups.push_back(m_itp_group);
     app * ans  = m().mk_skolem_const(name, m().mk_bool_sort());
     m().inc_ref(ans);
     m_assertion_names.push_back(ans);
-    if (m_solver)
+    if (m_solver) {
+        m_solver->set_itp_group(m_itp_group);
         m_solver->assert_expr(t, ans);
+    }
 }
 
 void cmd_context::push() {

@@ -26,6 +26,7 @@ z3_add_component(sat_smt
     euf_proof_checker.cpp
     euf_relevancy.cpp
     euf_solver.cpp
+    euf_interpolator.cpp
     intblast_solver.cpp
     itp_visitor.cpp
     fpa_solver.cpp

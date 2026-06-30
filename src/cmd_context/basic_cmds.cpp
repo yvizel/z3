@@ -295,6 +295,17 @@ UNARY_CMD(set_logic_cmd, "set-logic", "<symbol>", "set the background logic.", C
           }
           );
 
+UNARY_CMD(set_itp_group_cmd, "set-itp-group", "<symbol>", "set the interpolation partition (A or B) for subsequently asserted formulas.", CPK_SYMBOL, symbol const &,
+          if (arg == symbol("A"))
+              ctx.set_itp_group(1);
+          else if (arg == symbol("B"))
+              ctx.set_itp_group(2);
+          else {
+              ctx.print_unsupported(symbol("interpolation group must be A or B"), m_line, m_pos);
+              return;
+          }
+          ctx.print_success(););
+
 UNARY_CMD(pp_cmd, "display", "<term>", "display the given term.", CPK_EXPR, expr *, {
     ctx.display(ctx.regular_stream(), arg);
     ctx.regular_stream() << std::endl;
@@ -961,6 +972,7 @@ public:
 
 void install_basic_cmds(cmd_context & ctx) {
     ctx.insert(alloc(set_logic_cmd));
+    ctx.insert(alloc(set_itp_group_cmd));
     ctx.insert(alloc(exit_cmd));
     ctx.insert(alloc(get_assignment_cmd));
     ctx.insert(alloc(get_assertions_cmd));

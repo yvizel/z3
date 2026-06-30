@@ -85,6 +85,7 @@ namespace euf {
     class egraph {        
 
         friend class plugin;
+        friend class euf_summarizer;
 
         typedef ptr_vector<trail> trail_stack;
 
@@ -205,6 +206,7 @@ namespace euf {
         enode_vector           m_todo;
         stats                  m_stats;
         bool                   m_uses_congruence = false;
+        bool                   m_mark_js = false;   // mark justifications of merges (for summarization)
         bool                   m_default_relevant = true;
         uint64_t               m_congruence_timestamp = 0;
 
@@ -276,6 +278,10 @@ namespace euf {
         enode_vector const& enodes_of(func_decl* f);
         void push() { if (can_propagate()) propagate(); ++m_num_scopes; }
         void pop(unsigned num_scopes);
+
+        // When enabled, justifications created by subsequent merges are marked
+        // (used to tag one A/B side for euf_summarizer).
+        void set_mark_justifications(bool mark) { m_mark_js = mark; }
 
         /**
            \brief merge nodes, all effects are deferred to the propagation step.

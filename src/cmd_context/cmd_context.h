@@ -287,6 +287,8 @@ protected:
     ptr_vector<expr>             m_assertions;
     std::vector<std::string>     m_assertion_strings;
     ptr_vector<expr>             m_assertion_names; // named assertions are represented using boolean variables.
+    unsigned                     m_itp_group = 0;   // current interpolation group for new assertions (0=none,1=A,2=B)
+    svector<unsigned>            m_assertion_itp_groups; // per-assertion interpolation group (parallel to m_assertions)
     scoped_ptr<var_subst>        m_std_subst, m_rev_subst;
     simplifier_factory           m_simplifier_factory;
 
@@ -543,6 +545,10 @@ public:
 
     ptr_vector<expr> const& assertions() const { return m_assertions; }
     ptr_vector<expr> const& assertion_names() const { return m_assertion_names; }
+
+    // interpolation: the (set-itp-group A|B) command sets the group for subsequent assertions.
+    void set_itp_group(unsigned g) { m_itp_group = g; }
+    unsigned get_itp_group() const { return m_itp_group; }
     vector<std::pair<expr*,expr*>> tracked_assertions();
     void reset_tracked_assertions();
 

@@ -74,6 +74,7 @@ namespace euf {
         friend class enode_th_vars;
         friend class etable;
         friend class egraph;
+        friend class euf_summarizer;
 
         static unsigned get_enode_size(unsigned num_args) {
             return sizeof(enode) + num_args * sizeof(enode*);

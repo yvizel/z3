@@ -54,6 +54,8 @@ class inc_sat_solver : public solver {
     goal2sat        m_goal2sat;
     params_ref      m_params;
     expr_ref_vector m_fmls;
+    obj_map<expr, unsigned> m_fmls_group;     // formula -> interpolation group (1=A, 2=B)
+    unsigned        m_pending_itp_group = 0;  // group for the next asserted formula
     expr_ref_vector m_asmsf;
     unsigned_vector m_fmls_lim;
     unsigned_vector m_asms_lim;
@@ -366,10 +368,14 @@ public:
     }
 
     ast_manager& get_manager() const override { return m; }
+    void set_itp_group(unsigned g) override { m_pending_itp_group = g; }
+
     void assert_expr_core(expr * t) override {
         TRACE(goal2sat, tout << mk_pp(t, m) << "\n";);
         m_is_cnf &= is_clause(t);
         m_fmls.push_back(t);
+        if (m_pending_itp_group != 0)
+            m_fmls_group.insert(t, m_pending_itp_group);
     }
     void set_produce_models(bool f) override {}
     void collect_param_descrs(param_descrs & r) override {
@@ -972,12 +978,49 @@ private:
         return false;
     }
 
+    // Internalize pending formulas grouped by interpolation partition: the B
+    // group (2) first, then A (1), then any ungrouped formulas, setting the euf
+    // solver's current group around each batch so input clauses are logged with
+    // their __itp_A/__itp_B marking.
+    lbool internalize_formulas_itp() {
+        euf::solver* e = m_goal2sat.ensure_euf();
+        lbool res = l_true;
+        unsigned const order[3] = { 2, 1, 0 };
+        for (unsigned k = 0; k < 3; ++k) {
+            unsigned grp = order[k];
+            goal_ref g = alloc(goal, m, true, false);
+            bool any = false;
+            for (unsigned i = m_fmls_head; i < m_fmls.size(); ++i) {
+                expr* fml = m_fmls.get(i);
+                unsigned fg = 0;
+                m_fmls_group.find(fml, fg);
+                if (fg != grp)
+                    continue;
+                g->assert_expr(fml);
+                any = true;
+            }
+            if (!any)
+                continue;
+            if (e) e->set_itp_group(grp);
+            res = internalize_goal(g);
+            if (e) e->set_itp_group(0);
+            if (res == l_undef)
+                return res;
+        }
+        m_fmls_head = m_fmls.size();
+        m_internalized_converted = false;
+        return res;
+    }
+
     lbool internalize_formulas() {
-        if (m_fmls_head == m_fmls.size()) 
+        if (m_fmls_head == m_fmls.size())
             return l_true;
 
+        if (gparams::get_module("solver").get_bool("proof.interpolate_log", false))
+            return internalize_formulas_itp();
+
         lbool res;
-        
+
         if (m_is_cnf) {
             res = internalize_goal(m_fmls.size() - m_fmls_head, m_fmls.data() + m_fmls_head);
         }

@@ -117,9 +117,16 @@ public:
 
     virtual void assert_expr_core(expr * t) = 0;
 
-    void assert_expr(expr_ref_vector const& ts) { 
+    void assert_expr(expr_ref_vector const& ts) {
         for (expr* e : ts) assert_expr(e);
     }
+
+    /**
+       \brief Set the interpolation A/B group (0 = none, 1 = A, 2 = B) for
+       subsequently asserted formulas. Only honored by solvers that support
+       interpolation proof logging; a no-op otherwise.
+    */
+    virtual void set_itp_group(unsigned group) {}
 
     virtual void set_phase(expr* e) = 0;
     virtual void move_to_front(expr* e) = 0; 

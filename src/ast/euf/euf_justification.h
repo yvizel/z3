@@ -57,6 +57,9 @@ namespace euf {
             dependency* m_dependency;
             enode* m_n2;
         };
+        // general purpose mark, used to tag justifications during EUF interpolant
+        // summarization (see euf_summarizer).
+        bool m_mark = false;
 
         justification(bool comm, uint64_t ts):
             m_kind(kind_t::congruence_t),
@@ -108,6 +111,8 @@ namespace euf {
         bool   is_commutative() const { return m_comm; }
         bool   is_dependent() const { return m_kind == kind_t::dependent_t; }
         bool   is_equality() const { return m_kind == kind_t::equality_t; }
+        bool   is_marked() const { return m_mark; }
+        void   set_mark(bool m = true) { m_mark = m; }
         dependency* get_dependency() const { SASSERT(is_dependent());  return m_dependency; }
         enode* lhs() const { SASSERT(is_equality()); return m_n1; }
         enode* rhs() const { SASSERT(is_equality()); return m_n2; }
@@ -117,20 +122,16 @@ namespace euf {
         T*  ext() const { SASSERT(is_external()); return static_cast<T*>(m_external); }            
 
         justification copy(std::function<void*(void*)>& copy_justification) const {
+            justification r;
             switch (m_kind) {
-            case kind_t::external_t:
-                return external(copy_justification(m_external));
-            case kind_t::axiom_t:
-                return axiom(m_theory_id);
-            case kind_t::congruence_t:
-                return congruence(m_comm, m_timestamp);
-            case kind_t::dependent_t:
-                NOT_IMPLEMENTED_YET();
-                return dependent(m_dependency);
-            default:
-                UNREACHABLE();
-                return axiom(-1);
+            case kind_t::external_t: r = external(copy_justification(m_external)); break;
+            case kind_t::axiom_t: r = axiom(m_theory_id); break;
+            case kind_t::congruence_t: r = congruence(m_comm, m_timestamp); break;
+            case kind_t::dependent_t: NOT_IMPLEMENTED_YET(); r = dependent(m_dependency); break;
+            default: UNREACHABLE(); r = axiom(-1); break;
             }
+            r.m_mark = m_mark;
+            return r;
         }
 
         std::ostream& display(std::ostream& out, std::function<void(std::ostream&, void*)> const& ext) const;

@@ -74,12 +74,10 @@ namespace sat {
         // plain input clause, and is labelled by a theory-specific procedure.
         u_map<expr*> m_theory_hint;
 
-        // A/B coloring of EUF terms (atoms-only for now). An uninterpreted symbol is
-        // marked by the union of the marks of the atoms it occurs in; AB means the
-        // symbol occurs on both sides (shared/common). A term's color is derived from
-        // its symbols. Interpreted/theory symbols are common and not colored.
+        // A/B coloring of uninterpreted symbols (over the atoms they occur in):
+        // AB means the symbol occurs on both sides (shared/common). Used to decide
+        // whether a congruence's function symbol is usable in the summarized side.
         obj_map<func_decl, ab_mark> m_sym_mark;    // uninterpreted symbol -> A/B/AB
-        obj_map<expr, ab_mark>      m_term_mark;   // memoized term color (union of symbol marks)
 
         expr*    m_true = nullptr;
         expr*    m_false = nullptr;
@@ -105,7 +103,13 @@ namespace sat {
 
         void compute_symbol_marks();
         void mark_symbols(expr* atom, ab_mark mk);
-        bool has_b_local_symbol(expr* t);  // t contains a symbol tagged B (MARK_B)
+        ab_mark symbol_mark(func_decl* f) const;  // uninterpreted symbol color
+
+        // EUF interpolation of a theory lemma: parse the negated clause into an
+        // (A, B) pair (alpha = literals whose atom is not B-only) and delegate to
+        // euf_interpolator. Returns the partial interpolant, or null if the lemma
+        // is not handled (non-equality atoms, unhandled conflict shape).
+        expr_ref euf_interpolant(literal_vector const& clause);
 
     public:
         itp_visitor(ast_manager& m):
@@ -126,18 +130,6 @@ namespace sat {
 
         // The computed interpolant (valid after replay reaches the empty clause).
         expr_ref get_interpolant() const { return m_interpolant; }
-
-        // A/B coloring queries (AB = shared/common). Valid after visit_marks.
-        ab_mark symbol_mark(func_decl* f) const;  // uninterpreted symbol color
-        ab_mark term_mark(expr* t);               // union of the term's symbol colors
-        bool is_ab_common(expr* t);               // every uninterpreted symbol in t is shared
-
-        // Negate a theory clause and split the resulting conjunction of literals into
-        // the (alpha, beta) interpolation pair: a literal goes to beta iff its atom
-        // contains a B-local symbol, otherwise to alpha. The conjunction of alpha and
-        // of beta is unsatisfiable (the clause is theory-valid), so an interpolant of
-        // (alpha, beta) is the clause's partial interpolant.
-        void split_theory_clause(literal_vector const& clause, expr_ref_vector& alpha, expr_ref_vector& beta);
 
         void visit_marks(svector<ab_mark> const& var_marks, svector<ab_mark> const& trail_marks) override;
         void visit_assumption(unsigned id, literal_vector const& clause, ab_mark mark = MARK_NONE) override;

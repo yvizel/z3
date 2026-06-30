@@ -137,6 +137,7 @@ public:
     }
 
     void set_phase(expr* e) override { m_solver1->set_phase(e); m_solver2->set_phase(e); }
+    void set_itp_group(unsigned g) override { m_solver1->set_itp_group(g); m_solver2->set_itp_group(g); }
     solver::phase* get_phase() override { auto* p = m_solver1->get_phase(); if (!p) p = m_solver2->get_phase(); return p; }
     void set_phase(solver::phase* p) override { m_solver1->set_phase(p); m_solver2->set_phase(p); }
     void move_to_front(expr* e) override { m_solver1->move_to_front(e); m_solver2->move_to_front(e); }
