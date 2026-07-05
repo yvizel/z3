@@ -1,0 +1,461 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\Itp}{\mathit{Itp}}
+\newcommand{\true}{\top}
+\newcommand{\false}{\bot}
+\newcommand{\lbla}{\mathsf{a}}
+\newcommand{\lblb}{\mathsf{b}}
+\newcommand{\lblab}{\mathsf{ab}}
+\newcommand{\opt}[1]{\texttt{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{EUF Craig Interpolation in Z3 via DRUP Proof Replay:\\
+Reordering, Labeled Systems, and Colorability}
+\author{Yakir Vizel \and Claude (Anthropic)}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the Craig interpolation pipeline implemented in a
+development branch of Z3 for quantifier-free EUF. Interpolants are computed
+by replaying a trimmed clausal (DRUP-style) proof, combining a labeled
+propositional interpolation system with a theory-specific procedure for EUF
+lemmas based on proof-forest summarization. On top of the basic pipeline the
+branch implements the proof reordering techniques of \emph{DRUPing for
+Interpolants} (colored unit propagation and restructuring of resolution
+chains into single-colored stages), the labeled interpolation systems of
+D'Silva et al.\ (McMillan, HKP, and McMillan's dual, with a differential
+strength check), and a per-variable label optimization that targets
+colorability of theory lemmas. We describe how the pieces fit together,
+what was proved and measured along the way, and directions for future work.
+\end{abstract}
+
+\section{Introduction}
+
+Given an unsatisfiable pair of formulas $(A, B)$, a Craig interpolant is a
+formula $I$ over the symbols common to $A$ and $B$ such that $A \models I$
+and $I \wedge B$ is unsatisfiable. The implementation described here
+computes interpolants for quantifier-free EUF problems from the clausal
+proofs produced by Z3's \code{sat.euf} solver, following the general recipe
+of \emph{DRUPing for Interpolants}~\cite{drup-itp}: log a DRUP-style proof
+during solving, trim it, and compute the interpolant during a validated
+replay of the trimmed proof. Theory reasoning enters the proof as EUF lemmas
+with certificates (hints), which receive their own partial interpolants from
+a dedicated EUF interpolation procedure.
+
+The relevant solver options are collected in
+Table~\ref{tab:options}; the directory \code{euf\_examples/} in the
+repository contains the instances referenced throughout, each of which
+passes the built-in interpolant validity checks.
+
+\section{The Interpolation Pipeline}
+\label{sec:pipeline}
+
+\subsection{Proof logging and partitions}
+
+The user partitions the input with \code{(set-itp-group A)} and
+\code{(set-itp-group B)}; with \opt{solver.proof.interpolate\_log} enabled,
+every logged input clause carries its partition as a marker
+(\code{\_\_itp\_A} / \code{\_\_itp\_B}). During solving, the clause proof is
+logged (\opt{solver.proof.log}): input clauses as \code{assume} steps, RUP
+inferences as \code{infer \ldots\ rup}, EUF lemmas as inferences carrying an
+\code{euf} hint that certifies the lemma (congruence and transitivity
+premises), and clause deletions as \code{del} steps.
+
+\subsection{Trimming and marking}
+
+The proof is replayed by \code{proof\_trim}
+(\opt{solver.proof.trim}), which re-runs the proof steps forward and then
+performs the backward pass of~\cite{drup-itp}: starting from the terminal
+conflict, each in-core inference is justified by a conflict-analysis probe
+(assert the negated clause, propagate, trace the conflict cone), which marks
+the clauses it depends on as core and records them as the inference's
+dependencies. Theory lemmas are treated as \emph{assumptions} during
+trimming --- they are not RUP --- with their full clause reconstructed by the
+proof checker when base-level-false literals were dropped from the logged
+clause.
+
+When interpolation is enabled (\opt{solver.proof.interpolate}), trimming
+additionally computes the $A$/$B$ \emph{markings} used by everything
+downstream. A marking is a subset of $\{A, B\}$, combined by union:
+\begin{itemize}
+\item an original clause is marked $A$ or $B$ by its partition;
+\item an inferred clause is marked with the union of the marks of its
+      antecedents;
+\item a variable is marked with the union of the marks of the original core
+      clauses in which it occurs (mark $AB$ = \emph{shared});
+\item a level-0 trail literal is marked by its unit derivation.
+\end{itemize}
+
+\subsection{Replay and validation}
+
+The trimmed proof is replayed by \code{proof\_replay\_validator} on a fresh
+internal SAT solver. Assumptions are added directly; every RUP inference is
+validated by a conflict-analysis probe, and the resulting \emph{trivial
+resolution chain} --- the sequence of reason clauses and pivots that derives
+the inference --- is handed to a visitor. Unit propagations at level~0 are
+likewise traced and emitted as chains. The visitor abstraction decouples
+replay from interpolation: the same replay drives logging, validation, and
+interpolant construction.
+
+\subsection{Interpolant construction}
+
+The interpolating visitor (\code{itp\_visitor}) maintains a partial
+interpolant for every derived clause and unit. Input clauses receive leaf
+labels, theory lemmas receive EUF partial interpolants
+(Section~\ref{sec:euf-leaf}), and every resolution chain combines the
+partial interpolants of its premises pivot by pivot according to the labeled
+system of Section~\ref{sec:labelings}. The partial interpolant of the empty
+clause is the interpolant; it is simplified and, with
+\opt{solver.proof.check\_interpolant}, verified by three solver checks:
+$A \Rightarrow I$, $I \wedge B$ unsatisfiable, and that $I$ uses only shared
+symbols.
+
+\subsection{Theory lemmas: EUF partial interpolants}
+\label{sec:euf-leaf}
+
+An EUF lemma $C$ is a valid clause; its negation $\neg C$ is an
+unsatisfiable conjunction of equalities and disequalities. The literals of
+$\neg C$ are charged to an $(\alpha, \beta, \gamma)$ triple according to
+their labels (Section~\ref{sec:labelings}); the lemma's partial interpolant
+$J$ must satisfy the \emph{labeled T-lemma obligations}
+\begin{equation}
+\label{eq:tlemma}
+\alpha \wedge \gamma \models_{\mathrm{EUF}} J
+\qquad\text{and}\qquad
+J \wedge \beta \wedge \gamma \models_{\mathrm{EUF}} \false ,
+\end{equation}
+over shared symbols. $J$ is computed by \code{euf\_interpolator} using
+colored proof-forest summarization:
+\begin{enumerate}
+\item build an egraph over all terms of the lemma; merge the equalities of
+      the \emph{summarized} side first, with their proof-forest edges
+      \emph{marked}, and close under congruence; then merge the other
+      side's equalities unmarked;
+\item locate a violated disequality and walk the proof-forest path between
+      its endpoints (\code{euf\_summarizer}): every maximal run of marked
+      edges is summarized by an equality between its endpoint terms;
+      congruence edges are re-derived recursively, folded into runs when
+      their function symbol and argument paths are usable in the
+      summarized side, and otherwise replaced by their argument equalities
+      (introducing shared boundary terms);
+\item a conflict on a $\beta$ disequality is interpolated by summarizing
+      the $\alpha\gamma$ side; a conflict on an $\alpha$ disequality
+      dually, with $J$ negated ($\Itp(A,B) = \neg \Itp(B,A)$).
+\end{enumerate}
+Trivial cases short-circuit: if $\beta \wedge \gamma$ is unsatisfiable
+alone, $J = \true$; if $\alpha \wedge \gamma$ is, $J = \false$.
+
+\subsection{Stitching}
+
+In summary, the propositional skeleton (resolution over input clauses,
+theory lemmas, and derived clauses) is interpolated by the labeled system,
+while each theory lemma contributes a leaf interpolant satisfying
+\eqref{eq:tlemma}. Soundness of the composition rests on the leaf and pivot
+rules maintaining, for every derived clause $C$ with partial interpolant
+$J(C)$, the invariant
+$A \models C{\downarrow}\lbla \vee J(C)$ and
+$B \models C{\downarrow}\lblb \vee \neg J(C)$,
+where $C{\downarrow}\ell$ restricts $C$ to its $\ell$-labeled literals; the
+theory obligations \eqref{eq:tlemma} are exactly this invariant for T-valid
+leaves.
+
+\section{Proof Reordering and Colorability}
+\label{sec:reorder}
+
+A resolution proof is \emph{colorable} when every chain resolves clauses of
+a single partition; colorable proofs yield structurally simple (CNF-like)
+interpolants, whereas chains that interleave $A$ and $B$ steps nest the
+$\vee/\wedge$ combinations of the labeling one level per color crossing.
+Following~\cite{drup-itp}, the replay reorders proofs toward colorability in
+two places, both gated by \opt{solver.proof.reorder} (default on).
+
+\subsection{Colored unit propagation}
+
+The replay solver's propagation runs in \emph{rounds} driven by a clause
+filter: round~1 propagates only $A$-marked clauses to fixpoint, round~2
+admits every clause; each round restarts the queue scan from the same
+initial position, and a clause skipped in an early round keeps its watch
+entries untouched. Because the last round is unrestricted, filtered
+propagation assigns exactly the same literals as plain propagation --- only
+the \emph{order}, and hence the reasons recorded on the trail, change. The
+trail itself is never permuted, so assignment order remains
+antecedent-before-consequent, the invariant on which replay, tracing, and
+backtracking rely.\footnote{An earlier implementation reordered the trail in
+place; it corrupted both the interpolant construction (out-of-order unit
+tracing) and backtracking (literals stranded across scope boundaries), and
+was replaced by the round-based scheme. A related, independent defect was
+found and fixed in the replay indexing: proof step identifiers do not
+coincide with trail positions once deletions or duplicate units occur, and
+both replay paths now map identifiers to trail positions explicitly.}
+An orthogonal option, \opt{solver.proof.core\_first\_bcp}, adds leading
+rounds restricted to clauses already marked core, biasing new chains toward
+reusing the existing core, with an unrestricted final round preserving
+completeness.
+
+\subsection{Restructuring RUP chains}
+
+Chain construction is \emph{partition-bounded} conflict analysis: clauses
+are ranked $\mathrm{part}(C) \in \{1, 2\}$ (pure-$A$ versus everything
+else), and each lemma is derived in stages. If the conflict lies within
+partition~1, a first pass resolves only pivots with partition-1 reasons; if
+it already derives the lemma, the chain is single-colored and we are done,
+and otherwise the result is emitted as an \emph{intermediate lemma} from
+which the analysis restarts with the bound lifted. Inside a mixed chain, a
+pivot whose reason is pure-$A$ first has that reason \emph{purified}
+(MiniSat's \code{fixrec}): it is re-derived within partition~1 and emitted
+as its own single-colored chain, and the mixed chain uses the purified
+clause as a leaf. Purified reasons are cached per variable assignment.
+Pivots are always resolved in reverse trail order, so chains remain trivial
+resolution chains and no pivot is ever re-introduced.
+
+\subsection{Colorability on the EUF side}
+
+The natural question is whether the same reordering applies inside theory
+lemmas. The answer, somewhat surprisingly, is that the EUF procedure of
+Section~\ref{sec:euf-leaf} \emph{already} contains both halves of the
+recipe, in a stronger form:
+
+\begin{itemize}
+\item \textbf{Merge order is colored propagation.} Closing the summarized
+      side first, with marked justifications, makes the proof forest
+      \emph{maximally} colored for that side: any equality it entails is
+      derived --- and marked --- in the first phase, because the acyclic
+      union-find never re-connects an already-connected pair. Congruence
+      closure is complete for ground EUF, so this single eager closure
+      captures everything at once, where propositional colored BCP must
+      still restructure chains after the fact.
+\item \textbf{Congruence re-derivation is purification.} Congruence edges
+      are created unmarked; the summarizer re-derives each one, marks it
+      when its symbol and argument paths are usable in the summarized side
+      (fusing marked runs --- exactly what purification would do), and
+      otherwise replaces it by argument equalities, which is the best
+      colorable summary available.
+\end{itemize}
+
+Consequently a path-level purification pass --- re-marking runs of
+other-side edges whose endpoints the summarized side entails on its own ---
+is provably a no-op under the current merge order. The pass is nonetheless
+implemented, guarded by a side-entailment oracle, as an \emph{executable
+statement of the invariant}: if a future change (merge order, justification
+marking, non-minimal lemma explanations) breaks the argument, purification
+becomes live and reports itself instead of silently degrading interpolants.
+Measurements confirm zero activations across the example suite, including
+with the merge phases deliberately reversed (trimmed lemmas are minimal
+conflicts and admit no redundant justification choices).
+
+\subsection{Effect}
+
+On \code{itp\_reorder.smt2} --- two thirty-step implication chains over
+equality atoms with color pattern $A\,A\,B$ repeating --- the raw
+interpolant with reordering is a flat, CNF-like conjunction with one small
+clause per color-run boundary; with \opt{solver.proof.reorder=false} it is a
+deeply nested $\vee/\wedge$ alternation of the same size (179 nodes) that
+simplification cannot flatten. On tree-shaped EUF ladders the final
+interpolants coincide with and without reordering: $\wedge/\vee$ are
+associative--commutative, so re-association alone vanishes under
+simplification; the benefit there is structural (single-colored chains,
+factored $A$-lemmas).
+
+\section{Labeled Interpolation Systems}
+\label{sec:labelings}
+
+The propositional construction is a labeled interpolation system in the
+sense of D'Silva et al.~\cite{lis}. Every literal occurrence carries a label
+in the lattice $\lblb \sqsubseteq \lblab \sqsubseteq \lbla$; locality forces
+$A$-local variables to $\lbla$ and $B$-local variables to $\lblb$, while
+shared variables are free. The implementation uses uniform per-variable
+labels: a base policy (\opt{solver.proof.itp\_labeling}) fixes the label of
+shared variables ---
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+policy & shared label & system \\
+\midrule
+\opt{mcmillan} (default) & $\lblb$ & McMillan~\cite{mcmillan} (strongest) \\
+\opt{hkp}                & $\lblab$ & Huang / Kraj\'{\i}\v{c}ek / Pudl\'ak (symmetric) \\
+\opt{dual}               & $\lbla$ & McMillan's dual (weakest) \\
+\bottomrule
+\end{tabular}
+\end{center}
+--- and unmarked variables are treated as $\lblb$. The rules are:
+\begin{align*}
+C \in A:&\quad J(C) = \bigvee \{\, \ell \in C : L(\ell) = \lblb \,\} \\
+C \in B:&\quad J(C) = \bigwedge \{\, \neg\ell : \ell \in C,\ L(\ell) = \lbla \,\} \\
+\text{pivot } p:&\quad
+\begin{cases}
+J_1 \vee J_2 & L(p) = \lbla \\
+J_1 \wedge J_2 & L(p) = \lblb \\
+(J_1 \vee \neg p) \wedge (J_2 \vee p) & L(p) = \lblab
+\end{cases}
+\end{align*}
+where, in the $\lblab$ rule, the premise of $J_2$ contains the pivot literal
+$p$. Under the default policy this coincides literally with McMillan's
+system, and the implementation is bit-for-bit backward compatible.
+
+\paragraph{Theory lemmas under labels.}
+The labels determine the $(\alpha, \beta, \gamma)$ split of
+Section~\ref{sec:euf-leaf}: $\lbla$-labeled atoms go to $\alpha$,
+$\lblb$-labeled to $\beta$, and $\lblab$-labeled to $\gamma$, which is
+available to \emph{both} sides per the obligations \eqref{eq:tlemma}.
+Operationally, $\gamma$ atoms join whichever side is summarized (merged
+marked in the first phase, and included in the purification oracle), which
+is also the colorability-optimal placement. A subtle point uncovered during
+this work: charging a shared atom to $\alpha$ while resolving its pivot with
+the $\lblb$ rule (as an earlier version did) is a mixed labeling combined
+with a pure-$\lblb$ pivot rule and is unsound in general; the split must
+follow the labels, which the current implementation enforces by
+construction.
+
+\paragraph{Strength ordering.}
+For a fixed proof, pointwise-stronger labelings yield logically stronger
+interpolants; in particular
+$\Itp_{\text{mcmillan}} \models \Itp_{\text{hkp}} \models
+\Itp_{\text{dual}}$. The option \opt{solver.proof.check\_labeling\_order}
+recomputes the interpolant under all three labelings on the same trimmed
+proof and verifies both implications with solver calls. Theory-lemma
+partial interpolants are not strength-ordered leaf-wise across labelings,
+so with theory lemmas present a violation is reported as advisory; on the
+current suite the order holds strictly everywhere, and on
+\code{itp\_reorder.smt2} both reverse implications fail, i.e.\ the three
+systems are strictly separated (179 / 209 / 179 raw nodes with three
+distinct shapes).
+
+\section{Colorability-Directed Labeling}
+\label{sec:labelopt}
+
+The $\lblab$ label is a double-edged sword: inside a theory lemma it lets a
+shared equality join the summarized side, keeping the lemma's internal chain
+single-colored; at every propositional resolution on that variable it costs
+an $\lblab$-guard $(J_1 \vee \neg p) \wedge (J_2 \vee p)$. Uniform policies
+take both effects or neither. The per-variable optimization
+\opt{solver.proof.itp\_label\_opt=colorable} takes only the good half: it
+promotes to $\lblab$ \emph{exactly the shared variables that occur in theory
+lemmas}, leaving all other shared variables at the base policy's label.
+Labels are computed once, before replay, so every occurrence of a variable
+is labeled consistently (which soundness requires), and promotion is
+monotone in the label lattice, so the strength order check of
+Section~\ref{sec:labelings} remains valid.
+
+The example \code{colorable\_opt.smt2} combines a congruence chain through a
+shared link with a colored propositional implication chain in a single
+conflict and separates the configurations:
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+configuration & raw nodes & lemma interpolant \\
+\midrule
+\opt{mcmillan} & 37 & splits at the shared boundary \\
+\opt{mcmillan} + \opt{colorable} & 39 & single colorable equality \\
+\opt{hkp} & 47 & single equality, guards on every chain boundary \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The optimization degenerates correctly at both extremes: it coincides with
+\opt{hkp} when every shared variable occurs in a lemma
+(\code{theory\_ab2.smt2}) and with \opt{mcmillan} when none does
+(\code{itp\_reorder.smt2}).
+
+\section{Future Work}
+\label{sec:future}
+
+\begin{itemize}
+\item \textbf{Size- and strength-directed labeling.} The label space is
+      larger than one heuristic: replays on a trimmed proof are cheap, so a
+      search over per-variable promotions (keep a promotion if the raw
+      interpolant shrinks) is practical. For model-checking clients,
+      strength can matter more than size; exposing the labeling per query
+      would let e.g.\ an IC3/Avy-style loop pick weak or strong
+      interpolants adaptively.
+\item \textbf{Per-occurrence labels.} The unit-label cache is compatible
+      with per-occurrence labels (partial interpolants attach to
+      derivations, not occurrences); what is missing is a policy surface
+      and a use case, e.g.\ PeRIPLO-style proof-sensitive labeling.
+\item \textbf{Sequence interpolants.} The visitor design mirrors Avy's
+      \code{ItpSequence}; generalizing from one $(A,B)$ cut to a sequence
+      of cuts over the same replay would produce sequence interpolants in
+      one pass, which is what BMC-based model checkers consume.
+\item \textbf{Richer theory coverage.} \code{euf\_interpolator} handles
+      equality atoms; uninterpreted predicates and other convex theories
+      (e.g.\ difference logic) could reuse the same
+      $(\alpha,\beta,\gamma)$ leaf interface. Non-equality atoms currently
+      fall back to a generic leaf, which weakens interpolants; the
+      fallback should at least be instrumented.
+\item \textbf{Interpolant post-processing.} Summaries can contain
+      duplicate or subsumed conjuncts across chains; a dedicated
+      simplification (or emitting summaries into a hash-consed set) would
+      shrink outputs beyond what generic rewriting achieves.
+\item \textbf{Scaling studies.} The example suite is synthetic and small.
+      Running the pipeline on Avy/HWMCC-derived IUC queries would exercise
+      colored propagation and chain restructuring where they matter
+      (large, deletion-heavy proofs) and quantify the effect of
+      \opt{core\_first\_bcp} and \opt{colorable} on interpolant size and
+      convergence.
+\item \textbf{Formalization.} The labeled T-lemma obligations
+      \eqref{eq:tlemma}, the maximality argument for the two-phase merge,
+      and the soundness of chain restructuring are proved on paper (in
+      code comments); a mechanized or at least carefully written-up proof
+      of the composed system would be valuable, particularly around the
+      interaction of purification, labels, and the dual (negated) EUF
+      case.
+\end{itemize}
+
+\appendix
+
+\section{Option summary}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lp{8.2cm}}
+\toprule
+option & effect \\
+\midrule
+\opt{solver.proof.log} & log the clause proof to a file \\
+\opt{solver.proof.interpolate\_log} & emit \code{\_\_itp\_A}/\code{\_\_itp\_B} partition markers \\
+\opt{solver.proof.trim} & trim the logged proof \\
+\opt{solver.proof.replay} & replay with validation after trimming \\
+\opt{solver.proof.interpolate} & compute markings and an interpolant during replay \\
+\opt{solver.proof.check\_interpolant} & verify $A \Rightarrow I$, $I \wedge B$ unsat, shared symbols \\
+\opt{solver.proof.reorder} & colored propagation + chain restructuring (default on) \\
+\opt{solver.proof.core\_first\_bcp} & prefer core-marked clauses in replay propagation \\
+\opt{solver.proof.itp\_labeling} & \opt{mcmillan} / \opt{hkp} / \opt{dual} shared-variable labeling \\
+\opt{solver.proof.itp\_label\_opt} & \opt{none} / \opt{colorable} per-variable label optimization \\
+\opt{solver.proof.check\_labeling\_order} & verify $\Itp_{\text{mc}} \models \Itp_{\text{hkp}} \models \Itp_{\text{dual}}$ \\
+\bottomrule
+\end{tabular}
+\caption{Interpolation-related options.}
+\label{tab:options}
+\end{table}
+
+\begin{thebibliography}{9}
+
+\bibitem{drup-itp}
+A.~Gurfinkel and Y.~Vizel.
+\newblock DRUPing for interpolants.
+\newblock In \emph{Formal Methods in Computer-Aided Design (FMCAD)}, 2014.
+
+\bibitem{lis}
+V.~D'Silva, D.~Kroening, M.~Purandare, and G.~Weissenbacher.
+\newblock Interpolant strength.
+\newblock In \emph{Verification, Model Checking, and Abstract Interpretation
+  (VMCAI)}, 2010.
+
+\bibitem{mcmillan}
+K.~L. McMillan.
+\newblock Interpolation and SAT-based model checking.
+\newblock In \emph{Computer Aided Verification (CAV)}, 2003.
+
+\end{thebibliography}
+
+\end{document}
