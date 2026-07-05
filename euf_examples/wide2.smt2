@@ -1,0 +1,48 @@
+;; 2 parallel 3-step A/B equality ladders over disjoint variables;
+;; B refutes the disjunction of the negated ladder conclusions, so every
+;; ladder is in the core. Deep propositional resolution over many small
+;; theory lemmas.
+
+(set-option :sat.euf true)
+(set-option :tactic.default_tactic sat)
+(set-option :solver.proof.log wide2_proof.smt2)
+(set-option :solver.proof.interpolate_log true)
+
+(declare-sort U)
+(declare-const x0_0 U)
+(declare-const x0_1 U)
+(declare-const x0_2 U)
+(declare-const x0_3 U)
+(declare-const y0_1 U)
+(declare-const y0_2 U)
+(declare-const y0_3 U)
+(declare-const x1_0 U)
+(declare-const x1_1 U)
+(declare-const x1_2 U)
+(declare-const x1_3 U)
+(declare-const y1_1 U)
+(declare-const y1_2 U)
+(declare-const y1_3 U)
+
+(set-itp-group A)
+(assert (and
+          (or (= x0_0 x0_1) (= x0_0 y0_1))
+          (or (not (= x0_0 y0_1)) (= y0_1 x0_1))
+          (or (= x0_2 x0_3) (= x0_2 y0_3))
+          (or (not (= x0_2 y0_3)) (= y0_3 x0_3))
+          (or (= x1_0 x1_1) (= x1_0 y1_1))
+          (or (not (= x1_0 y1_1)) (= y1_1 x1_1))
+          (or (= x1_2 x1_3) (= x1_2 y1_3))
+          (or (not (= x1_2 y1_3)) (= y1_3 x1_3))
+        ))
+
+(set-itp-group B)
+(assert (and
+          (or (= x0_1 x0_2) (= x0_1 y0_2))
+          (or (not (= x0_1 y0_2)) (= y0_2 x0_2))
+          (or (= x1_1 x1_2) (= x1_1 y1_2))
+          (or (not (= x1_1 y1_2)) (= y1_2 x1_2))
+          (or (not (= x0_0 x0_3)) (not (= x1_0 x1_3)))
+        ))
+
+(check-sat)

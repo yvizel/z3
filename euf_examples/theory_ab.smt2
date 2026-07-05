@@ -1,0 +1,15 @@
+;; Theory lemma with an AB (shared-label) atom: x=y occurs in an A unit and
+;; in a B clause, and drives the congruence F(x)=F(y) inside a theory lemma.
+(set-option :sat.euf true)
+(set-option :tactic.default_tactic sat)
+(set-option :solver.proof.log theory_ab_proof.smt2)
+(set-option :solver.proof.interpolate_log true)
+(declare-sort U)
+(declare-const x U)
+(declare-const y U)
+(declare-fun F (U) U)
+(set-itp-group A)
+(assert (= x y))
+(set-itp-group B)
+(assert (or (not (= x y)) (not (= (F x) (F y)))))
+(check-sat)

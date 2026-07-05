@@ -75,6 +75,7 @@ class proof_trim {
     bool                    m_empty = false;
     bool                    m_replay = false;
     bool                    m_check_interpolant = false;
+    bool                    m_check_labeling_order = false;
     symbol                  m_itp_labeling = symbol("mcmillan");
     
     void mk_clause(expr_ref_vector const& clause) {
@@ -139,6 +140,10 @@ public:
 
     void set_itp_labeling(symbol const& s) {
         m_itp_labeling = s;
+    }
+
+    void set_check_labeling_order(bool b) {
+        m_check_labeling_order = b;
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -290,6 +295,61 @@ public:
         }
     }
 
+    // Configure an interpolation visitor with the real atoms and theory hints.
+    void init_itp_visitor(sat::itp_visitor& itp) {
+        // Provide the real boolean atoms (bool_var == atom id) so that term/symbol
+        // coloring is over the actual EUF terms.
+        for (auto const& clause : m_clauses)
+            for (expr* e : clause)
+                if (m.is_bool(e)) {
+                    expr* atom = e;
+                    m.is_not(atom, atom);
+                    itp.set_atom(atom->get_id(), atom);
+                }
+        for (auto const& kv : m_theory_hints)
+            itp.register_theory_clause(kv.m_key, kv.m_value);
+    }
+
+    // Recompute the interpolant of the (already trimmed) proof under the
+    // given labeling, discarding the replay log.
+    expr_ref labeled_interpolant(vector<std::pair<unsigned, unsigned_vector>> const& ids, sat::itp_labeling lab) {
+        sat::itp_visitor itp(m);
+        itp.set_labeling(lab);
+        init_itp_visitor(itp);
+        std::ostringstream sink;
+        trim.replay_with_visitor(ids, itp, sink);
+        return itp.get_interpolant();
+    }
+
+    // Differential check of the labeled interpolation systems: on the same
+    // proof, the interpolants must be ordered by strength,
+    // mcmillan |= hkp |= dual. Theory-lemma partial interpolants legitimately
+    // differ across labelings (they are not strength-ordered leaf-wise), so
+    // with theory lemmas present a violation is reported as advisory only.
+    void check_labeling_order(vector<std::pair<unsigned, unsigned_vector>> const& ids, std::ostream& out) {
+        expr_ref i_mc = labeled_interpolant(ids, sat::itp_labeling::mcmillan);
+        expr_ref i_hkp = labeled_interpolant(ids, sat::itp_labeling::hkp);
+        expr_ref i_dual = labeled_interpolant(ids, sat::itp_labeling::dual);
+        bool advisory = !m_theory_hints.empty();
+        params_ref p;
+        auto implies = [&](expr* s, expr* w, char const* name) {
+            if (!s || !w) {
+                out << "; check labeling order " << name << ": skipped (missing interpolant)\n";
+                return;
+            }
+            solver_ref sol = mk_smt_solver(m, p, symbol::null);
+            sol->assert_expr(s);
+            sol->assert_expr(m.mk_not(w));
+            lbool r = sol->check_sat();
+            out << "; check labeling order " << name << ": "
+                << (r == l_false ? "passed"
+                    : r == l_true ? (advisory ? "not ordered (advisory: theory lemmas present)" : "FAILED")
+                    : "unknown") << "\n";
+        };
+        implies(i_mc, i_hkp, "mcmillan => hkp");
+        implies(i_hkp, i_dual, "hkp => dual");
+    }
+
     void do_trim(std::ostream& out, bool replay) {
         ast_pp_util pp(m);
         auto ids = trim.trim();
@@ -306,17 +366,7 @@ public:
                 itp.set_labeling(sat::itp_labeling::dual);
             else if (m_itp_labeling != "mcmillan")
                 warning_msg("unknown proof.itp_labeling '%s', using mcmillan", m_itp_labeling.str().c_str());
-            // Provide the real boolean atoms (bool_var == atom id) so that term/symbol
-            // coloring is over the actual EUF terms.
-            for (auto const& clause : m_clauses)
-                for (expr* e : clause)
-                    if (m.is_bool(e)) {
-                        expr* atom = e;
-                        m.is_not(atom, atom);
-                        itp.set_atom(atom->get_id(), atom);
-                    }
-            for (auto const& kv : m_theory_hints)
-                itp.register_theory_clause(kv.m_key, kv.m_value);
+            init_itp_visitor(itp);
             trim.replay_with_visitor(ids, itp, out);
             expr_ref interpolant = itp.get_interpolant();
             IF_VERBOSE(1, if (interpolant) verbose_stream() << "; raw interpolant (" << get_num_exprs(interpolant) << " nodes): " << mk_pp(interpolant, m) << "\n");
@@ -330,6 +380,8 @@ public:
             out << "; interpolant: " << mk_pp(interpolant, m) << "\n";
             if (m_check_interpolant && interpolant)
                 check_interpolant(interpolant, out);
+            if (m_check_labeling_order)
+                check_labeling_order(ids, out);
         }
         for (auto const& [id, deps] : ids) {
             auto& clause = m_clauses[id];
@@ -534,6 +586,7 @@ public:
             trim().set_core_first_bcp(sp.proof_core_first_bcp());
             trim().set_reorder(sp.proof_reorder());
             trim().set_itp_labeling(sp.proof_itp_labeling());
+            trim().set_check_labeling_order(sp.proof_check_labeling_order());
         }
     }
 
