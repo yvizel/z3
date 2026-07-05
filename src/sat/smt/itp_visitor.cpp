@@ -62,31 +62,51 @@ namespace sat {
         return pin(m.mk_and(a, b));
     }
 
-    // Leaf labeling (McMillan):
-    //   A-clause -> disjunction of its shared literals (false if none)
-    //   B-clause -> true
+    // Leaf labeling of the labeled interpolation system:
+    //   A-clause -> disjunction of its b-labeled literals (false if none)
+    //   B-clause -> conjunction of the negations of its a-labeled literals
+    //               (true if none)
+    // Under the default mcmillan labeling this is McMillan's system: the
+    // b-labeled literals of an A-clause are exactly its shared literals, and
+    // a B-clause has no a-labeled literals, so its label is true.
     expr* itp_visitor::mk_leaf(literal_vector const& clause, ab_mark mark) {
-        if (mark == MARK_B)
-            return m_true;
-        if (mark != MARK_A) {
+        if (mark != MARK_A && mark != MARK_B) {
             // Original clauses are required to be A or B; treat an unmarked
             // leaf conservatively as B (does not constrain the interpolant).
             IF_VERBOSE(1, verbose_stream() << "itp: leaf clause without A/B mark, treating as B\n");
-            return m_true;
+            mark = MARK_B;
         }
-        expr* label = m_false;
+        if (mark == MARK_A) {
+            expr* lab = m_false;
+            for (literal l : clause)
+                if (label(l.var()) == lbl::b)
+                    lab = mk_or(lab, lit2expr(l));
+            return lab;
+        }
+        expr* lab = m_true;
         for (literal l : clause)
-            if (is_shared(l.var()))
-                label = mk_or(label, lit2expr(l));
-        return label;
+            if (label(l.var()) == lbl::a)
+                lab = mk_and(lab, lit2expr(~l));
+        return lab;
     }
 
-    expr* itp_visitor::combine(bool_var pivot, expr* l1, expr* l2) {
+    // Resolution rule of the labeled interpolation system. The premise
+    // labelled l2 contains the literal `pivot`; the premise labelled l1
+    // contains its negation.
+    expr* itp_visitor::combine(literal pivot, expr* l1, expr* l2) {
         if (l1 == l2)
             return l1;
-        if (is_a_local(pivot))
+        switch (label(pivot.var())) {
+        case lbl::a:
             return mk_or(l1, l2);
-        return mk_and(l1, l2);
+        case lbl::b:
+            return mk_and(l1, l2);
+        default:
+            // ab rule: (I1 \/ ~pivot) /\ (I2 \/ pivot) - each premise's
+            // interpolant is guarded by the pivot literal that premise
+            // contains.
+            return mk_and(mk_or(l1, lit2expr(~pivot)), mk_or(l2, lit2expr(pivot)));
+        }
     }
 
     void itp_visitor::normalize(literal_vector& c) const {
@@ -198,16 +218,15 @@ namespace sat {
             // The conjunct of the negated clause is ~l; it is a disequality iff
             // the clause literal is positive.
             bool is_diseq = !l.sign();
-            // Charge only A-local atoms to alpha; shared (AB) and unmarked
-            // atoms go to beta. This matches the McMillan labeling used by
-            // the rest of the system: mk_leaf labels A-clauses with their
-            // shared literals and combine() applies the b-rule (AND) to
-            // shared pivots, both of which charge every occurrence of a
-            // shared literal - including in theory leaves - to the B side.
-            // Charging a shared atom to alpha would let the lemma's partial
-            // interpolant rely on it without the AND rule ever restoring the
-            // guard, breaking A |= Itp in general.
-            bool is_a = (var_mark(l.var()) == MARK_A);
+            // Charge atoms by their label: a-labeled atoms to alpha, b- and
+            // ab-labeled to beta. The lemma's partial interpolant J then
+            // satisfies the labeled T-lemma obligations - alpha |= J and
+            // J & beta unsat - consistently with the pivot rules of
+            // combine(). Charging an ab-labeled atom to beta is sound (the
+            // ab obligations allow it on both sides; using it only on the B
+            // side weakens nothing unsoundly), just potentially suboptimal
+            // until the interpolator handles a three-way split.
+            bool is_a = (label(l.var()) == lbl::a);
             atoms.push_back({ s, t, is_diseq, is_a });
         }
         euf_interpolator itp(m);
@@ -242,7 +261,8 @@ namespace sat {
         bool_var pivot = p1.var();
         expr* l1 = (pivot < m_unit_label.size() && m_unit_label[pivot]) ? m_unit_label[pivot] : m_true;
         expr* l2 = clause_label(p2.m_lits);
-        expr* label = combine(pivot, l1, l2);
+        // the unit premise (l1) contains p1; the reason (l2) contains ~p1
+        expr* label = combine(~p1, l1, l2);
         bool_var v = resolvent.var();
         m_unit_label.reserve(v + 1, nullptr);
         m_unit_label[v] = label;
@@ -258,7 +278,8 @@ namespace sat {
         for (unsigned i = 0; i < chainPivots.size(); ++i) {
             bool_var pivot = chainPivots[i].var();
             expr* l = (pivot < m_unit_label.size() && m_unit_label[pivot]) ? m_unit_label[pivot] : m_true;
-            label = combine(pivot, label, l);
+            // chainPivots holds the trail literal, which occurs in the unit premise (l)
+            label = combine(chainPivots[i], label, l);
         }
         bool_var v = parent.var();
         m_unit_label.reserve(v + 1, nullptr);
@@ -279,7 +300,8 @@ namespace sat {
                 l = clause_label(r.m_lits);
             else
                 l = (pivot < m_unit_label.size() && m_unit_label[pivot]) ? m_unit_label[pivot] : m_true;
-            label = combine(pivot, label, l);
+            // chainPivots holds the trail literal, which occurs in the reason/unit premise (l)
+            label = combine(chainPivots[i], label, l);
         }
         if (parent.m_lits.empty())
             m_interpolant = label;  // root: empty clause

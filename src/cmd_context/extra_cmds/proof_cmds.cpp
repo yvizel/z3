@@ -75,6 +75,7 @@ class proof_trim {
     bool                    m_empty = false;
     bool                    m_replay = false;
     bool                    m_check_interpolant = false;
+    symbol                  m_itp_labeling = symbol("mcmillan");
     
     void mk_clause(expr_ref_vector const& clause) {
         trim.init_clause();
@@ -134,6 +135,10 @@ public:
 
     void set_reorder(bool b) {
         trim.set_reorder(b);
+    }
+
+    void set_itp_labeling(symbol const& s) {
+        m_itp_labeling = s;
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -295,6 +300,12 @@ public:
         }
         if (trim.interpolate()) {
             sat::itp_visitor itp(m);
+            if (m_itp_labeling == "hkp")
+                itp.set_labeling(sat::itp_labeling::hkp);
+            else if (m_itp_labeling == "dual")
+                itp.set_labeling(sat::itp_labeling::dual);
+            else if (m_itp_labeling != "mcmillan")
+                warning_msg("unknown proof.itp_labeling '%s', using mcmillan", m_itp_labeling.str().c_str());
             // Provide the real boolean atoms (bool_var == atom id) so that term/symbol
             // coloring is over the actual EUF terms.
             for (auto const& clause : m_clauses)
@@ -522,6 +533,7 @@ public:
             trim().set_check_interpolant(sp.proof_check_interpolant());
             trim().set_core_first_bcp(sp.proof_core_first_bcp());
             trim().set_reorder(sp.proof_reorder());
+            trim().set_itp_labeling(sp.proof_itp_labeling());
         }
     }
 

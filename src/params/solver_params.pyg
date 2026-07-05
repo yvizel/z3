@@ -20,5 +20,6 @@ def_module_params('solver',
                           ('proof.check_interpolant', BOOL, False, 'after computing an interpolant during proof replay, verify that A implies it, that it is inconsistent with B, and that it only uses shared symbols'),
                           ('proof.core_first_bcp', BOOL, False, 'during proof replay, prefer propagating clauses already marked as core before the remaining clauses'),
                           ('proof.reorder', BOOL, True, 'during interpolating proof replay, use colored (A-first) propagation and restructure RUP chains into per-partition stages (FMCAD14 DRUPing for Interpolants)'),
+                          ('proof.itp_labeling', SYMBOL, 'mcmillan', 'labeling of shared variables for interpolation (labeled interpolation systems): mcmillan (strongest), hkp (symmetric), dual (weakest)'),
                           ))
                 
