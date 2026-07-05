@@ -218,16 +218,19 @@ namespace sat {
             // The conjunct of the negated clause is ~l; it is a disequality iff
             // the clause literal is positive.
             bool is_diseq = !l.sign();
-            // Charge atoms by their label: a-labeled atoms to alpha, b- and
-            // ab-labeled to beta. The lemma's partial interpolant J then
-            // satisfies the labeled T-lemma obligations - alpha |= J and
-            // J & beta unsat - consistently with the pivot rules of
-            // combine(). Charging an ab-labeled atom to beta is sound (the
-            // ab obligations allow it on both sides; using it only on the B
-            // side weakens nothing unsoundly), just potentially suboptimal
-            // until the interpolator handles a three-way split.
-            bool is_a = (label(l.var()) == lbl::a);
-            atoms.push_back({ s, t, is_diseq, is_a });
+            // Charge atoms by their label: a-labeled atoms to alpha,
+            // b-labeled to beta, ab-labeled to gamma (available to both
+            // sides). The lemma's partial interpolant J then satisfies the
+            // labeled T-lemma obligations - alpha & gamma |= J and
+            // J & beta & gamma unsat - consistently with the pivot rules of
+            // combine().
+            ab_mark side;
+            switch (label(l.var())) {
+            case lbl::a:  side = MARK_A;  break;
+            case lbl::b:  side = MARK_B;  break;
+            default:      side = MARK_AB; break;
+            }
+            atoms.push_back({ s, t, is_diseq, side });
         }
         euf_interpolator itp(m);
         return itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); });

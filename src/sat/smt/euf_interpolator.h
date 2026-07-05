@@ -27,6 +27,14 @@ Abstract:
     swapping the roles of A and B: the interpolant of (A, B) is the negation of
     the interpolant of (B, A).
 
+    Atoms carry a three-valued side tag matching the labels of a labeled
+    interpolation system: MARK_A (alpha only), MARK_B (beta only), or MARK_AB
+    (gamma - available to both sides). The labeled T-lemma obligations are
+    alpha & gamma |= J and J & beta & gamma unsat, so gamma atoms join
+    whichever side is being summarized (and both trivial-case checks), which
+    is also the colorability-optimal placement: a larger summarized closure
+    yields longer single-colored runs and simpler summaries.
+
 Author:
 
     Yakir Vizel 2025
@@ -46,10 +54,10 @@ namespace sat {
     public:
         // A single (dis)equality literal of the negated theory clause.
         struct atom {
-            expr* lhs;
-            expr* rhs;
-            bool  is_diseq;  // disequality (lhs != rhs) rather than equality
-            bool  is_a;      // belongs to the A (alpha) part rather than B (beta)
+            expr*   lhs;
+            expr*   rhs;
+            bool    is_diseq;  // disequality (lhs != rhs) rather than equality
+            ab_mark side;      // MARK_A: alpha, MARK_B: beta, MARK_AB: gamma (both sides)
         };
 
         euf_interpolator(ast_manager& m): m(m) {}

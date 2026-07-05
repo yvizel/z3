@@ -47,17 +47,24 @@ namespace sat {
         return eg.mk(e, 0, args.size(), args.data());
     }
 
-    // Assert the equalities of one side; report whether a disequality of that
-    // same side is then violated (the side is unsatisfiable on its own).
+    // Whether an atom belongs to the given side; gamma (MARK_AB) atoms belong
+    // to both sides.
+    static bool on_side(atom const& a, bool side_a) {
+        return a.side == MARK_AB || a.side == (side_a ? MARK_A : MARK_B);
+    }
+
+    // Assert the equalities of one side (including gamma); report whether a
+    // disequality of that same side is then violated (the side is
+    // unsatisfiable on its own).
     static bool side_unsat(ast_manager& m, svector<atom> const& atoms, bool side_a) {
         euf::egraph eg(m);
         for (auto const& a : atoms) { intern(eg, a.lhs); intern(eg, a.rhs); }
         for (auto const& a : atoms)
-            if (a.is_a == side_a && !a.is_diseq)
+            if (on_side(a, side_a) && !a.is_diseq)
                 eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
         eg.propagate();
         for (auto const& a : atoms)
-            if (a.is_a == side_a && a.is_diseq &&
+            if (on_side(a, side_a) && a.is_diseq &&
                 eg.find(a.lhs)->get_root() == eg.find(a.rhs)->get_root())
                 return true;
         return false;
@@ -66,7 +73,7 @@ namespace sat {
     expr_ref euf_interpolator::interpolate(svector<atom> const& atoms, std::function<ab_mark(func_decl*)> const& sym_mark) {
         expr_ref null(m);
         bool has_a = false, has_b = false;
-        for (auto const& a : atoms) { has_a |= a.is_a; has_b |= !a.is_a; }
+        for (auto const& a : atoms) { has_a |= a.side != MARK_B; has_b |= a.side != MARK_A; }
 
         auto mk_conj = [&](expr_ref_vector const& v) -> expr_ref {
             if (v.empty())  return expr_ref(m.mk_true(), m);
@@ -92,7 +99,10 @@ namespace sat {
                 auto const& a = atoms[i];
                 if (a.is_diseq && eg.find(a.lhs)->get_root() == eg.find(a.rhs)->get_root()) {
                     diseq_idx = i;
-                    diseq_is_a = a.is_a;
+                    // A gamma disequality is available to both sides; treat it
+                    // like a beta one (summarize A, no negation) - the gamma
+                    // conjunct is present in the J & beta & gamma obligation.
+                    diseq_is_a = a.side == MARK_A;
                     break;
                 }
             }
@@ -115,12 +125,12 @@ namespace sat {
         for (auto const& a : atoms) { intern(eg, a.lhs); intern(eg, a.rhs); }
         eg.set_mark_justifications(true);
         for (auto const& a : atoms)
-            if (!a.is_diseq && a.is_a == summarize_a)
+            if (!a.is_diseq && on_side(a, summarize_a))
                 eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
         eg.propagate();
         eg.set_mark_justifications(false);
         for (auto const& a : atoms)
-            if (!a.is_diseq && a.is_a != summarize_a)
+            if (!a.is_diseq && !on_side(a, summarize_a))
                 eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
         eg.propagate();
 
@@ -154,7 +164,7 @@ namespace sat {
         euf::egraph eg_s(m);
         for (auto const& a : atoms) { intern(eg_s, a.lhs); intern(eg_s, a.rhs); }
         for (auto const& a : atoms)
-            if (!a.is_diseq && a.is_a == summarize_a)
+            if (!a.is_diseq && on_side(a, summarize_a))
                 eg_s.merge(eg_s.find(a.lhs), eg_s.find(a.rhs), a.lhs);
         eg_s.propagate();
         auto side_entails = [&](expr* x, expr* y) {
