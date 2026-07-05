@@ -20,6 +20,10 @@ Useful additional options:
   restructuring (baseline for comparing proof/interpolant structure).
 - `solver.proof.itp_labeling=mcmillan|hkp|dual` — labeling of shared
   variables (strongest / symmetric / weakest interpolant).
+- `solver.proof.itp_label_opt=colorable` — promote only the shared
+  variables occurring in theory lemmas to label ab, so lemma-internal
+  chains stay single-colored without paying ab guards on purely
+  propositional shared pivots.
 - `solver.proof.check_labeling_order=true` — verify
   mcmillan => hkp => dual on the same proof.
 - `solver.proof.core_first_bcp=true` — prefer core-marked clauses during
@@ -40,6 +44,7 @@ Useful additional options:
 | `itp_reorder.smt2` | same shape, 30 steps | flagship reordering demo: with `reorder=true` the raw interpolant is a flat CNF-like conjunction, with `reorder=false` a deeply nested and/or alternation of the same size; also separates the three labelings strictly |
 | `theory_ab.smt2` | shared equality (A unit + B clause) driving a congruence | AB-labeled atom inside a theory lemma; exercises the gamma trivial-case path of the labeled T-lemma split |
 | `theory_ab2.smt2` | A-local link + shared link feeding a congruence | gamma through the summarizer: under `hkp` the lemma interpolant is a single equality spanning the whole chain, under `mcmillan` it splits at the shared boundary |
+| `colorable_opt.smt2` | theory chain + propositional A-A-B chain in one conflict | separates the labelings: `mcmillan` splits the lemma (37 nodes), `hkp` pays ab guards on every chain boundary (47), `mcmillan` + `itp_label_opt=colorable` gets the colorable lemma at 39 |
 
 The pre-existing `iuc_cubes-*.smt2` and `complex_itp.smt2` in the
 repository root exercise the same pipeline on congruence-heavy cubes.

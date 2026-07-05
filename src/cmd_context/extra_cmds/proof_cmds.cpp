@@ -77,6 +77,7 @@ class proof_trim {
     bool                    m_check_interpolant = false;
     bool                    m_check_labeling_order = false;
     symbol                  m_itp_labeling = symbol("mcmillan");
+    symbol                  m_itp_label_opt = symbol("none");
     
     void mk_clause(expr_ref_vector const& clause) {
         trim.init_clause();
@@ -144,6 +145,10 @@ public:
 
     void set_check_labeling_order(bool b) {
         m_check_labeling_order = b;
+    }
+
+    void set_itp_label_opt(symbol const& s) {
+        m_itp_label_opt = s;
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -308,6 +313,30 @@ public:
                 }
         for (auto const& kv : m_theory_hints)
             itp.register_theory_clause(kv.m_key, kv.m_value);
+        if (m_itp_label_opt == "colorable") {
+            // Prefer colorability: promote shared variables that occur in
+            // theory lemmas to label ab. Their atoms then join the gamma part
+            // of every lemma split - absorbed by whichever side is summarized
+            // - so lemma-internal chains stay single-colored, while shared
+            // pivots that never enter a lemma keep the base label and their
+            // resolutions pay no ab guard. Labels are fixed here, before
+            // replay, so all uses of a variable are labeled consistently.
+            for (auto const& kv : m_theory_hints) {
+                unsigned id = kv.m_key;
+                if (id >= m_clauses.size())
+                    continue;
+                for (expr* e : m_clauses[id]) {
+                    if (!m.is_bool(e))
+                        continue;
+                    expr* atom = e;
+                    m.is_not(atom, atom);
+                    if (trim.var_mark(atom->get_id()) == sat::MARK_AB)
+                        itp.promote_to_ab(atom->get_id());
+                }
+            }
+        }
+        else if (m_itp_label_opt != "none")
+            warning_msg("unknown proof.itp_label_opt '%s', using none", m_itp_label_opt.str().c_str());
     }
 
     // Recompute the interpolant of the (already trimmed) proof under the
@@ -587,6 +616,7 @@ public:
             trim().set_reorder(sp.proof_reorder());
             trim().set_itp_labeling(sp.proof_itp_labeling());
             trim().set_check_labeling_order(sp.proof_check_labeling_order());
+            trim().set_itp_label_opt(sp.proof_itp_label_opt());
         }
     }
 

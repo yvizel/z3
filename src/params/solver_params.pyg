@@ -22,5 +22,6 @@ def_module_params('solver',
                           ('proof.reorder', BOOL, True, 'during interpolating proof replay, use colored (A-first) propagation and restructure RUP chains into per-partition stages (FMCAD14 DRUPing for Interpolants)'),
                           ('proof.itp_labeling', SYMBOL, 'mcmillan', 'labeling of shared variables for interpolation (labeled interpolation systems): mcmillan (strongest), hkp (symmetric), dual (weakest)'),
                           ('proof.check_labeling_order', BOOL, False, 'recompute the interpolant under all labelings on the same proof and check the strength order mcmillan => hkp => dual (advisory when theory lemmas are present)'),
+                          ('proof.itp_label_opt', SYMBOL, 'none', 'per-variable label optimization on top of proof.itp_labeling: none, or colorable (label shared variables occurring in theory lemmas ab, so lemma-internal chains stay single-colored while purely propositional shared pivots keep the base label)'),
                           ))
                 

@@ -54,6 +54,7 @@ Author:
 #include "util/map.h"
 #include "util/obj_hashtable.h"
 #include "util/hash.h"
+#include "util/uint_set.h"
 
 namespace sat {
 
@@ -107,6 +108,12 @@ namespace sat {
         expr_ref m_interpolant;
 
         itp_labeling m_labeling = itp_labeling::mcmillan;
+        // Shared variables promoted to label ab, overriding the uniform
+        // policy (per-variable label optimization, e.g. shared variables
+        // occurring in theory lemmas, so that lemma-internal chains stay
+        // single-colored). Must be populated before replay: labels have to
+        // be fixed for the whole proof.
+        uint_set     m_ab_vars;
 
         ab_mark var_mark(bool_var v) const { return v < m_var_mark.size() ? m_var_mark[v] : MARK_NONE; }
         bool is_shared(bool_var v) const { return var_mark(v) == MARK_AB; }
@@ -117,6 +124,8 @@ namespace sat {
             case MARK_A:  return lbl::a;
             case MARK_B:  return lbl::b;
             case MARK_AB:
+                if (m_ab_vars.contains(v))
+                    return lbl::ab;
                 switch (m_labeling) {
                 case itp_labeling::hkp:  return lbl::ab;
                 case itp_labeling::dual: return lbl::a;
@@ -164,6 +173,11 @@ namespace sat {
         // Select the labeling of shared variables (default: mcmillan). Must be
         // set before replay.
         void set_labeling(itp_labeling l) { m_labeling = l; }
+
+        // Promote a shared variable to label ab regardless of the labeling
+        // mode (per-variable label optimization). Must be called before
+        // replay; only meaningful for variables with mark AB.
+        void promote_to_ab(bool_var v) { m_ab_vars.insert(v); }
 
         // Inject a real atom for a variable (e.g. an EUF equality) before replay.
         void set_atom(bool_var v, expr* a);
