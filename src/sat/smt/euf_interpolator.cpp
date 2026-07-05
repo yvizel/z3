@@ -104,6 +104,13 @@ namespace sat {
         // is interpolated by A's contribution, an A-side conflict by B's.
         bool summarize_a = !diseq_is_a;
 
+        // Merge the summarized side first (marked) and close it under
+        // congruence before touching the other side. This makes the proof
+        // forest maximally colored for the summarized side: any equality that
+        // side entails is derived - and marked - in the first phase, so a
+        // later other-side merge never usurps a derivation the summarized
+        // side could provide (the union-find never re-connects an already
+        // connected pair). This is the egraph analogue of colored BCP.
         euf::egraph eg(m);
         for (auto const& a : atoms) { intern(eg, a.lhs); intern(eg, a.rhs); }
         eg.set_mark_justifications(true);
@@ -130,9 +137,38 @@ namespace sat {
             return summarize_a ? (mk != MARK_B) : (mk != MARK_A);
         };
 
+        // Purification oracle: a separate closure of the summarized side alone
+        // (over the full term universe). The summarizer uses it to re-mark
+        // other-side path segments whose endpoint equality the summarized side
+        // already entails, fusing summarized runs (proof reordering for EUF).
+        //
+        // With the summarize-side-first merge order above this is provably a
+        // no-op: an equality entailed by the summarized side alone is already
+        // derived in the first phase, so the (acyclic) proof forest connects
+        // its endpoints through phase-1 edges only - marked inputs, or
+        // congruences that summarize_congr re-derives and marks itself. The
+        // pass is kept as an executable statement of that invariant: if a
+        // future change (merge order, justification marking, non-minimal
+        // lemma explanations) breaks it, purification becomes live and
+        // reports at verbosity 2 instead of silently degrading interpolants.
+        euf::egraph eg_s(m);
+        for (auto const& a : atoms) { intern(eg_s, a.lhs); intern(eg_s, a.rhs); }
+        for (auto const& a : atoms)
+            if (!a.is_diseq && a.is_a == summarize_a)
+                eg_s.merge(eg_s.find(a.lhs), eg_s.find(a.rhs), a.lhs);
+        eg_s.propagate();
+        auto side_entails = [&](expr* x, expr* y) {
+            euf::enode* nx = eg_s.find(x);
+            euf::enode* ny = eg_s.find(y);
+            return nx && ny && nx->get_root() == ny->get_root();
+        };
+
         expr_ref_vector sum(m);
         euf::euf_summarizer summ(eg, sum, sym_colorable);
+        summ.set_side_entails(side_entails);
         summ.sum_eq(s, t);
+        IF_VERBOSE(2, if (summ.num_purified())
+                          verbose_stream() << "itp: euf purification fused " << summ.num_purified() << " segment(s)\n");
         expr_ref J = mk_conj(sum);
 
         // Itp(A,B): summary of A for a B-side conflict; negation of summary of B

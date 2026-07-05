@@ -198,10 +198,16 @@ namespace sat {
             // The conjunct of the negated clause is ~l; it is a disequality iff
             // the clause literal is positive.
             bool is_diseq = !l.sign();
-            // Classify by the atom's clause origin: a B-only atom is in beta,
-            // an A-only or shared atom in alpha. (Symbol-based classification
-            // fails when a B clause is over purely shared symbols.)
-            bool is_a = (var_mark(l.var()) != MARK_B);
+            // Charge only A-local atoms to alpha; shared (AB) and unmarked
+            // atoms go to beta. This matches the McMillan labeling used by
+            // the rest of the system: mk_leaf labels A-clauses with their
+            // shared literals and combine() applies the b-rule (AND) to
+            // shared pivots, both of which charge every occurrence of a
+            // shared literal - including in theory leaves - to the B side.
+            // Charging a shared atom to alpha would let the lemma's partial
+            // interpolant rely on it without the AND rule ever restoring the
+            // guard, breaking A |= Itp in general.
+            bool is_a = (var_mark(l.var()) == MARK_A);
             atoms.push_back({ s, t, is_diseq, is_a });
         }
         euf_interpolator itp(m);

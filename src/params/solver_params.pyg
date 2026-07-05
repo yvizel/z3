@@ -18,5 +18,7 @@ def_module_params('solver',
                           ('proof.interpolate', BOOL, False, 'compute A/B clause and variable markings during proof trimming for interpolation'),
                           ('proof.interpolate_log', BOOL, False, 'when logging a clause proof, emit A/B (__itp_A/__itp_B) markings on input clauses according to their (set-itp-group ...) partition'),
                           ('proof.check_interpolant', BOOL, False, 'after computing an interpolant during proof replay, verify that A implies it, that it is inconsistent with B, and that it only uses shared symbols'),
+                          ('proof.core_first_bcp', BOOL, False, 'during proof replay, prefer propagating clauses already marked as core before the remaining clauses'),
+                          ('proof.reorder', BOOL, True, 'during interpolating proof replay, use colored (A-first) propagation and restructure RUP chains into per-partition stages (FMCAD14 DRUPing for Interpolants)'),
                           ))
                 

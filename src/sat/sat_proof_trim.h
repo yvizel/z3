@@ -67,6 +67,8 @@ namespace sat {
 
         // A/B markings for interpolation. Populated only when m_interpolate is set.
         bool              m_interpolate = false;
+        bool              m_core_first_bcp = false;
+        bool              m_reorder = true;
         svector<ab_mark>  m_marks;       // clause id -> mark
         svector<ab_mark>  m_var_mark;    // bool_var -> mark (over original clauses)
         svector<ab_mark>  m_trail_mark;  // bool_var -> mark of its level-0 unit clause
@@ -108,6 +110,14 @@ namespace sat {
         // Interpolation A/B markings.
         void set_interpolate(bool b) { m_interpolate = b; }
         bool interpolate() const { return m_interpolate; }
+
+        // Prefer core-marked clauses during replay BCP (see
+        // proof_replay_validator::set_core_first_bcp).
+        void set_core_first_bcp(bool b) { m_core_first_bcp = b; }
+
+        // Colored BCP + chain restructuring during interpolating replay (see
+        // proof_replay_validator::set_reorder).
+        void set_reorder(bool b) { m_reorder = b; }
 
         // Compute A/B markings for inferred clauses, variables and the
         // level-0 trail. Must be called after trim() has populated m_result.

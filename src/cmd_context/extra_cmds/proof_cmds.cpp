@@ -127,6 +127,14 @@ public:
     void set_check_interpolant(bool b) {
         m_check_interpolant = b;
     }
+
+    void set_core_first_bcp(bool b) {
+        trim.set_core_first_bcp(b);
+    }
+
+    void set_reorder(bool b) {
+        trim.set_reorder(b);
+    }
     
     void del(expr_ref_vector const& _clause) {
         mk_clause(_clause);
@@ -300,6 +308,7 @@ public:
                 itp.register_theory_clause(kv.m_key, kv.m_value);
             trim.replay_with_visitor(ids, itp, out);
             expr_ref interpolant = itp.get_interpolant();
+            IF_VERBOSE(1, if (interpolant) verbose_stream() << "; raw interpolant (" << get_num_exprs(interpolant) << " nodes): " << mk_pp(interpolant, m) << "\n");
             // Simplify the interpolant expression before reporting it.
             if (interpolant) {
                 th_rewriter rw(m);
@@ -511,6 +520,8 @@ public:
             trim().set_replay(m_replay);
             trim().set_interpolate(m_interpolate);
             trim().set_check_interpolant(sp.proof_check_interpolant());
+            trim().set_core_first_bcp(sp.proof_core_first_bcp());
+            trim().set_reorder(sp.proof_reorder());
         }
     }
 

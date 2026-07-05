@@ -959,8 +959,28 @@ namespace sat {
     // -----------------------
 
     bool solver::propagate_core(bool update) {
-        if (m_ext && (!is_probing() || at_base_lvl())) 
-            m_ext->unit_propagate();    
+        // Round-based propagation under a bcp_filter (colored BCP): run
+        // propagation to fixpoint once per round, restarting the queue scan
+        // from the same initial position each time. Clauses skipped by the
+        // filter keep their watch entries and are examined in later rounds;
+        // the filter admits everything in the last round, so the final
+        // fixpoint (and the post-condition m_qhead == m_trail.size()) is the
+        // same as for unfiltered propagation. A conflict found in an early
+        // round stops immediately - it was derived from that round's clause
+        // set alone, which is exactly what colored replay wants.
+        if (m_bcp_filter && m_bcp_round == 0) {
+            unsigned init_qhead = m_qhead;
+            unsigned num_rounds = std::max(1u, m_bcp_filter->num_rounds());
+            for (unsigned r = 1; r <= num_rounds; ++r) {
+                flet<unsigned> _round(m_bcp_round, r);
+                m_qhead = init_qhead;
+                if (!propagate_core(update))
+                    return false;
+            }
+            return true;
+        }
+        if (m_ext && (!is_probing() || at_base_lvl()))
+            m_ext->unit_propagate();
         while (m_qhead < m_trail.size() && !m_inconsistent) {
             do {
                 checkpoint();
@@ -1034,6 +1054,13 @@ namespace sat {
             switch (it->get_kind()) {
             case watched::BINARY:
                 l1 = it->get_literal();
+                // binary clause is (not_l l1); skipped clauses keep their
+                // watch entry and are revisited in a later round
+                if (m_bcp_round != 0 && !m_bcp_filter->may_propagate(not_l, l1, m_bcp_round)) {
+                    *it2 = *it;
+                    it2++;
+                    break;
+                }
                 switch (value(l1)) {
                 case l_false:
                     CONFLICT_CLEANUP();
@@ -1060,6 +1087,11 @@ namespace sat {
                 clause_offset cls_off = it->get_clause_offset();
                 clause& c = get_clause(cls_off);
                 TRACE(propagate_clause_bug, tout << "processing... " << c << "\nwas_removed: " << c.was_removed() << "\n";);
+                if (m_bcp_round != 0 && !m_bcp_filter->may_propagate(c, m_bcp_round)) {
+                    *it2 = *it;
+                    it2++;
+                    break;
+                }
                 if (c[0] == not_l)
                     std::swap(c[0], c[1]);
                 CTRACE(propagate_bug, c[1] != not_l, tout << "l: " << l << " " << c << "\n";);

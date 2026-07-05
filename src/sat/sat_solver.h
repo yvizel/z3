@@ -85,7 +85,35 @@ namespace sat {
     struct no_drat_params : public params_ref {
         no_drat_params() { set_bool("drat.disable", true); }
     };
-    
+
+    /**
+       \brief Restricts which clauses may be used during a round of unit
+       propagation (cf. ordered propagation in MiniSat-based FMCAD'14
+       "DRUPing for Interpolants" implementations).
+
+       When a filter is installed (see solver::set_bcp_filter), propagation
+       runs in rounds 1..num_rounds(). Each round restarts scanning from the
+       same initial queue head and reaches a fixpoint over the clauses the
+       filter admits for that round; a clause skipped in an early round keeps
+       its watch entries untouched and is examined again in later rounds.
+       The filter must be monotone (a clause admitted in round r is admitted
+       in every round > r) and must admit every clause in the last round, so
+       filtered propagation assigns exactly the same literals as unfiltered
+       propagation — only the propagation *order* (and hence the reasons
+       recorded for derived literals) changes. The trail is never permuted,
+       so assignment order remains antecedent-before-consequent.
+    */
+    class bcp_filter {
+    public:
+        virtual ~bcp_filter() = default;
+        virtual unsigned num_rounds() const = 0;
+        // clause watched in a watch list
+        virtual bool may_propagate(clause const& c, unsigned round) const = 0;
+        // binary clause (l1 l2)
+        virtual bool may_propagate(literal l1, literal l2, unsigned round) const = 0;
+    };
+
+
     class solver : public solver_core {
     public:
         struct abort_solver : public std::exception {};
@@ -175,6 +203,14 @@ namespace sat {
         std::string             m_reason_unknown;
         bool                    m_trim = false;
         bool                    m_solver_canceled = false;
+
+        // Clause filter driving round-based unit propagation (see bcp_filter).
+        // Null (the default) means propagate_core behaves exactly as before;
+        // only proof_replay_validator's internal solver installs a filter, so
+        // live search is never affected. m_bcp_round is the current round
+        // during filtered propagation, 0 outside of it.
+        bcp_filter*             m_bcp_filter = nullptr;
+        unsigned                m_bcp_round = 0;
 
         visit_helper            m_visited;
 
@@ -473,6 +509,15 @@ namespace sat {
     public:
         // if update == true, then glue of learned clauses is updated.
         bool propagate(bool update);
+
+        // Install a clause filter for round-based unit propagation (colored
+        // BCP, FMCAD'14 "DRUPing for Interpolants": propagate A-clauses to
+        // fixpoint before touching B-clauses, so proof replay produces
+        // resolution chains that stay single-colored as long as possible).
+        // The filter must outlive every subsequent propagate() call, or be
+        // cleared first; pass nullptr to disable (the default) and fall back
+        // to plain single-round propagation.
+        void set_bcp_filter(bcp_filter* f) { m_bcp_filter = f; }
 
     protected:
         bool should_propagate() const;

@@ -69,9 +69,48 @@ namespace euf {
     return r;
   }
 
+  // Purification pre-pass (cf. MiniSat's fixrec / RUP-chain purify_reason):
+  // walk the branch and re-mark maximal runs of unmarked edges that lie
+  // strictly between marked edges when the summarized side alone entails the
+  // equality of the run's endpoints. The two enclosing marked runs then fuse
+  // into one, and the summary loses their two facing boundary equalities.
+  // Requiring marked edges on both flanks keeps run endpoints on terms that
+  // occur in summarized-side reasoning, so the summary's vocabulary is
+  // unchanged. Congruence edges inside a purified run are absorbed like any
+  // other marked edge: the run is summarized by its endpoints, so their
+  // internal structure is not needed.
+  void euf_summarizer::purify_branch(enode *n, enode *lca) {
+    if (!m_entails || n == lca)
+      return;
+    ptr_vector<enode> path;
+    for (enode *p = n; p != lca; p = p->m_target)
+      path.push_back(p);
+    path.push_back(lca);
+    unsigned k = path.size() - 1; // number of edges; edge i = (path[i], path[i+1])
+    unsigned i = 0;
+    while (i < k) {
+      if (path[i]->m_justification.is_marked()) {
+        ++i;
+        continue;
+      }
+      unsigned j = i;
+      while (j < k && !path[j]->m_justification.is_marked())
+        ++j;
+      // maximal unmarked segment [i, j); flanked by marked edges iff i > 0 and j < k
+      if (i > 0 && j < k && m_entails(path[i]->get_expr(), path[j]->get_expr())) {
+        for (unsigned l = i; l < j; ++l)
+          path[l]->m_justification.set_mark(true);
+        ++m_purified;
+      }
+      i = j;
+    }
+  }
+
   void euf_summarizer::summarize_trans(enode *a, enode *b, expr_ref &a_sum,
                                        expr_ref &b_sum) {
     enode *lca = m_eg.find_lca(a, b);
+    purify_branch(a, lca);
+    purify_branch(b, lca);
     expr_ref lhs(m);
     lhs = summarize_branch(a, lca, a_sum);
     expr_ref rhs(m);

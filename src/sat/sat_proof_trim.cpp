@@ -569,13 +569,22 @@ namespace sat {
         out << "; Replaying " << proof.size() << " clauses\n";
         m_conflict.reset();
         m_units.reset();
+        // Proof ids do not coincide with trail positions (deletions push
+        // id-less entries, skipped additions push none); index by stored id.
+        unsigned_vector id2idx;
+        for (unsigned i = 0; i < m_trail.size(); ++i) {
+            auto const& [tid, lits, cp, is_add, is_init] = m_trail[i];
+            if (is_add)
+                id2idx.setx(tid, i, UINT_MAX);
+        }
         for (auto const& [id, deps] : proof) {
-            if (id >= m_trail.size()) {
-                out << "; Skipping clause " << id << " (out of range)\n";
+            unsigned idx = id < id2idx.size() ? id2idx[id] : UINT_MAX;
+            if (idx == UINT_MAX) {
+                out << "; Skipping clause " << id << " (no trail entry)\n";
                 continue;
             }
 
-            auto const& [trail_id, clause_lits, clause_ptr, is_add, is_initial] = m_trail[id];
+            auto const& [trail_id, clause_lits, clause_ptr, is_add, is_initial] = m_trail[idx];
             
             // Skip clauses not marked as core
             auto& clause_info = m_clauses.find(clause_lits);
@@ -624,6 +633,8 @@ namespace sat {
         // We pass the solver's parameters and resource limit
         params_ref p;
         proof_replay_validator validator(p, s.m_rlimit);
+        validator.set_core_first_bcp(m_core_first_bcp);
+        validator.set_reorder(m_reorder);
         for (unsigned i = validator.num_vars(); i < num_vars(); ++i)
             validator.mk_var();
 
@@ -641,6 +652,8 @@ namespace sat {
                                          proof_visitor& v, std::ostream& out) {
         params_ref p;
         proof_replay_validator validator(p, s.m_rlimit);
+        validator.set_core_first_bcp(m_core_first_bcp);
+        validator.set_reorder(m_reorder);
         for (unsigned i = validator.num_vars(); i < num_vars(); ++i)
             validator.mk_var();
         validator.replay(proof, m_trail, v, out, m_has_terminal_empty_clause, m_terminal_empty_clause_id,

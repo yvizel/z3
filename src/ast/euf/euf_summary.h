@@ -109,11 +109,22 @@ class euf_summarizer {
   // shared or local to that side). When false, a congruence over it cannot be
   // expressed in the summary, so only its argument equalities are kept.
   std::function<bool(func_decl*)> m_sym_colorable;
+  // Optional purification oracle (FMCAD'14-style proof reordering for EUF):
+  // entails(x, y) holds when the summarized side alone already entails
+  // x = y. When set, walked paths are purified first: a run of other-side
+  // edges lying strictly between summarized-side edges whose endpoints the
+  // oracle equates is re-marked as summarized-side, fusing the enclosing
+  // marked runs into one and dropping their facing boundary equalities from
+  // the summary. Boundaries never move to new terms, so the summary's
+  // vocabulary is unaffected.
+  std::function<bool(expr*, expr*)> m_entails;
+  unsigned m_purified = 0;
 
   bool sym_colorable(enode* n) const {
     return !m_sym_colorable || !n->get_decl() || m_sym_colorable(n->get_decl());
   }
 
+  void purify_branch(enode *n, enode *lca);
   void summarize_trans(enode *a, enode *b, expr_ref &a_sum, expr_ref &b_sum);
   const congr_sum &summarize_congr(enode *c);
   expr_ref summarize_branch(enode *n, enode *lca, expr_ref &first_sum);
@@ -122,6 +133,8 @@ public:
   euf_summarizer(egraph &eg, expr_ref_vector &sum,
                  std::function<bool(func_decl*)> sym_colorable = nullptr)
       : m_eg(eg), m_sum(sum), m(eg.get_manager()), m_sym_colorable(std::move(sym_colorable)){};
+  void set_side_entails(std::function<bool(expr*, expr*)> entails) { m_entails = std::move(entails); }
+  unsigned num_purified() const { return m_purified; }
   void sum_eq(enode *a, enode *b);
 };
 
