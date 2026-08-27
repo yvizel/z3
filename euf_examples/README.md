@@ -45,6 +45,7 @@ Useful additional options:
 | `theory_ab.smt2` | shared equality (A unit + B clause) driving a congruence | AB-labeled atom inside a theory lemma; exercises the gamma trivial-case path of the labeled T-lemma split |
 | `theory_ab2.smt2` | A-local link + shared link feeding a congruence | gamma through the summarizer: under `hkp` the lemma interpolant is a single equality spanning the whole chain, under `mcmillan` it splits at the shared boundary |
 | `colorable_opt.smt2` | theory chain + propositional A-A-B chain in one conflict | separates the labelings: `mcmillan` splits the lemma (37 nodes), `hkp` pays ab guards on every chain boundary (47), `mcmillan` + `itp_label_opt=colorable` gets the colorable lemma at 39 |
+| `Z3HornGap.smt2` | A-local function links two pairs of shared constants | completeness gap: the required shared interpolant is the Horn clause `x = y -> u = v`, but the current summarizer exposes the A-local function `F` |
 
 The pre-existing `iuc_cubes-*.smt2` and `complex_itp.smt2` in the
 repository root exercise the same pipeline on congruence-heavy cubes.
