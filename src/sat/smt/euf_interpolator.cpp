@@ -146,6 +146,16 @@ namespace sat {
             ab_mark mk = sym_mark(f);
             return summarize_a ? (mk != MARK_B) : (mk != MARK_A);
         };
+        // A symbol may occur in the interpolant only if it is shared. Symbols
+        // are colored from the original input clauses, so an unmarked symbol
+        // occurs in no input clause at all (solver-introduced); it is usable by
+        // either side but must never be emitted, i.e. it is not shared.
+        std::function<bool(func_decl*)> sym_shared = [&](func_decl* f) {
+            ab_mark mk = sym_mark(f);
+            if (mk == MARK_NONE)
+                IF_VERBOSE(2, verbose_stream() << "itp: symbol " << f->get_name() << " has no A/B mark; treating as not shared\n");
+            return mk == MARK_AB;
+        };
 
         // Purification oracle: a separate closure of the summarized side alone
         // (over the full term universe). The summarizer uses it to re-mark
@@ -174,7 +184,7 @@ namespace sat {
         };
 
         expr_ref_vector sum(m);
-        euf::euf_summarizer summ(eg, sum, sym_colorable);
+        euf::euf_summarizer summ(eg, sum, sym_colorable, sym_shared);
         summ.set_side_entails(side_entails);
         summ.sum_eq(s, t);
         IF_VERBOSE(2, if (summ.num_purified())

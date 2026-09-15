@@ -1,0 +1,20 @@
+;; Ternary A-local F with one identical position: F(x,c,p) = F(y,c,q).
+;; The identical position contributes nothing; the two B-equal positions
+;; contribute one premise each.
+;;   expected: (=> (and (= x y) (= p q)) (= u v))
+(set-option :sat.euf true)
+(set-option :tactic.default_tactic sat)
+(set-option :solver.proof.log horn_ternary_proof.smt2)
+(set-option :solver.proof.interpolate_log true)
+(declare-sort U)
+(declare-const x U) (declare-const y U) (declare-const c U) (declare-const p U) (declare-const q U)
+(declare-const u U) (declare-const v U)
+(declare-fun F (U U U) U)
+(set-itp-group A)
+(assert (= u (F x c p)))
+(assert (= v (F y c q)))
+(set-itp-group B)
+(assert (= x y))
+(assert (= p q))
+(assert (not (= u v)))
+(check-sat)

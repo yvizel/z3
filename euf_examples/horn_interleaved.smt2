@@ -1,0 +1,23 @@
+;; Argument path alternating A and B segments: a ~A x ~B y ~A w ~B z ~A d.
+;; The premise is between the outer boundary terms (x = z); the interior
+;; A-run y = w is emitted as its own conjunct so B can derive the premise.
+;;   expected: (and (= y w) (=> (= x z) (= u v)))
+(set-option :sat.euf true)
+(set-option :tactic.default_tactic sat)
+(set-option :solver.proof.log horn_interleaved_proof.smt2)
+(set-option :solver.proof.interpolate_log true)
+(declare-sort U)
+(declare-const a U) (declare-const x U) (declare-const y U) (declare-const w U)
+(declare-const z U) (declare-const d U) (declare-const u U) (declare-const v U)
+(declare-fun F (U) U)
+(set-itp-group A)
+(assert (= u (F a)))
+(assert (= a x))
+(assert (= y w))
+(assert (= z d))
+(assert (= v (F d)))
+(set-itp-group B)
+(assert (= x y))
+(assert (= w z))
+(assert (not (= u v)))
+(check-sat)

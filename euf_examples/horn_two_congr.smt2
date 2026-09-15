@@ -1,0 +1,21 @@
+;; Two HORN congruences on one run: u ~ F(x1) = F(y1) ~ G(x2) = G(y2) ~ v,
+;; F and G A-local, argument equalities from B. Both premises land on the
+;; same run's clause.
+;;   expected: (=> (and (= x1 y1) (= x2 y2)) (= u v))  (conjunct order may differ)
+(set-option :sat.euf true)
+(set-option :tactic.default_tactic sat)
+(set-option :solver.proof.log horn_two_congr_proof.smt2)
+(set-option :solver.proof.interpolate_log true)
+(declare-sort U)
+(declare-const x1 U) (declare-const y1 U) (declare-const x2 U) (declare-const y2 U)
+(declare-const u U) (declare-const v U)
+(declare-fun F (U) U) (declare-fun G (U) U)
+(set-itp-group A)
+(assert (= u (F x1)))
+(assert (= (F y1) (G x2)))
+(assert (= (G y2) v))
+(set-itp-group B)
+(assert (= x1 y1))
+(assert (= x2 y2))
+(assert (not (= u v)))
+(check-sat)

@@ -98,10 +98,18 @@ namespace sat {
         // plain input clause, and is labelled by a theory-specific procedure.
         u_map<expr*> m_theory_hint;
 
-        // A/B coloring of uninterpreted symbols (over the atoms they occur in):
-        // AB means the symbol occurs on both sides (shared/common). Used to decide
-        // whether a congruence's function symbol is usable in the summarized side.
+        // A/B coloring of uninterpreted symbols: AB means the symbol occurs on
+        // both sides (shared/common), i.e. may appear in the interpolant. Used
+        // by the EUF summarizer to decide whether a congruence's function
+        // symbol is usable in the summarized side and whether a boundary
+        // application is shared. Preferably fixed from the ORIGINAL A/B input
+        // clauses via color_symbols (the vocabulary condition of a Craig
+        // interpolant is L(A) & L(B) of the original problem, and a symbol that
+        // occurs only in clauses the trimmer dropped would otherwise be
+        // misclassified as one-sided, or get no mark at all). Falls back to the
+        // atoms of the trimmed core (compute_symbol_marks) when not fixed.
         obj_map<func_decl, ab_mark> m_sym_mark;    // uninterpreted symbol -> A/B/AB
+        bool m_sym_marks_fixed = false;
 
         expr*    m_true = nullptr;
         expr*    m_false = nullptr;
@@ -154,6 +162,13 @@ namespace sat {
         void compute_symbol_marks();
         void mark_symbols(expr* atom, ab_mark mk);
         ab_mark symbol_mark(func_decl* f) const;  // uninterpreted symbol color
+
+    public:
+        // Fix the symbol coloring from the original A and B input clauses
+        // (before replay). Symbols of A get A, of B get B, of both AB.
+        void color_symbols(expr_ref_vector const& A, expr_ref_vector const& B);
+
+    private:
 
         // EUF interpolation of a theory lemma: parse the negated clause into an
         // (A, B) pair (alpha = literals whose atom is not B-only) and delegate to

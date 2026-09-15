@@ -1,13 +1,19 @@
-;; Minimal completeness gap in the EUF interpolator on Z3 branch `replay`.
+;; Minimal completeness gap in the EUF interpolator on Z3 branch `replay`
+;; (fixed: the summarizer now emits Horn clauses; see README.md).
 ;;
 ;; F is A-local.  The constants x, y, u, and v are shared.  The shared Craig
 ;; interpolant is the equality Horn clause
 ;;
 ;;     (= x y)  ->  (= u v)
 ;;
-;; The current egraph path summarizer instead exposes A-local F:
+;; The egraph path summarizer used to cut the A-run u ~ F(x) ~ F(y) ~ v at
+;; the congruence and expose the boundary applications, i.e. A-local F:
 ;;
 ;;     (and (= u (F x)) (= v (F y)))
+;;
+;; which failed the vocabulary check. It now keeps the run intact through
+;; the congruence and turns its B-justified argument equality into the
+;; premise of the run's clause.
 ;;
 ;; To reproduce with a debug build of the branch:
 ;;
@@ -18,10 +24,12 @@
 ;;     solver.proof.itp_labeling=mcmillan \
 ;;     solver.proof.check_interpolant=true -v:2
 ;;
-;; The first two semantic checks pass, but the vocabulary check reports:
+;; Expected:
 ;;
-;;   interpolant uses non-shared symbol F
-;;   check interpolant shared symbols only: FAILED
+;;   ; interpolant: (or (not (= x y)) (= u v))
+;;   ; check A => interpolant: passed
+;;   ; check interpolant /\ B unsat: passed
+;;   ; check interpolant shared symbols only: passed
 
 (set-option :sat.euf true)
 (set-option :tactic.default_tactic sat)

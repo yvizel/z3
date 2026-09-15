@@ -26,39 +26,100 @@ namespace euf {
     return expr_ref(m.mk_app(a->get_decl(), args.size(), args.data()), m);
   }
 
-  expr_ref euf_summarizer::summarize_branch(enode *n, enode *lca, expr_ref &first_sum) {
+  unsigned euf_summarizer::term_color(expr *e) {
+    unsigned r;
+    if (m_term_color.find(e, r))
+      return r;
+    r = 3;
+    if (is_app(e)) {
+      app *a = to_app(e);
+      func_decl *f = a->get_decl();
+      if (f->get_family_id() == null_family_id) {
+        if (!sym_colorable(f)) r &= ~1u;
+        if (!sym_shared(f)) r &= ~2u;
+      }
+      for (expr *arg : *a)
+        r &= term_color(arg);
+    }
+    m_term_color.insert(e, r);
+    return r;
+  }
+
+  void euf_summarizer::emit(expr_ref_vector const &prem, expr *lhs, expr *rhs) {
+    if (lhs == rhs)
+      return;
+    expr_ref eq(mk_eq_ordered(m, lhs, rhs), m);
+    if (prem.empty()) {
+      m_sum.push_back(eq);
+      return;
+    }
+    if (prem.contains(eq)) // premise = conclusion: tautology
+      return;
+    expr_ref body(m);
+    body = prem.size() == 1 ? expr_ref(prem.get(0), m) : expr_ref(m.mk_and(prem), m);
+    m_sum.push_back(m.mk_implies(body, eq));
+  }
+
+  expr_ref euf_summarizer::summarize_branch(enode *n, enode *lca, expr_ref &first_sum,
+                                            expr_ref_vector &first_prem, expr_ref_vector &open_prem) {
 
     expr_ref r(nullptr, m); // beginning of summary
+    open_prem.reset();
 
     if (n == lca)
       return r;
 
-    const congr_sum *csum = nullptr;
-    sum_manager sm(m_sum, n->get_expr(), first_sum);
+    sum_manager sm(*this, n->get_expr(), first_sum, first_prem);
 
     while (n != lca) {
       justification &j = n->m_justification;
-      if (j.is_congruence() && !j.is_marked()) {
-        csum = &summarize_congr(n); // marks j if colorable
-        // Only emit a congruence boundary (a function application over the
-        // summarized arguments) when the function symbol is usable in the
-        // summarized side. Otherwise the argument equalities, already pushed to
-        // m_sum by summarize_congr, are the boundary.
-        if (!j.is_marked() && sym_colorable(n)) {
-          // summary is not colorable
-          if (r) { // summary started, close
+      if (j.is_congruence()) {
+        const congr_sum *csum = nullptr;
+        if (!j.is_marked())
+          csum = &summarize_congr(n); // marks j if every argument is summarized-side
+        else {
+          auto it = m_ccsum.find(&j);
+          if (it != m_ccsum.end())
+            csum = &it->second;
+        }
+        if (j.is_marked()) {
+          // The edge joins the run; nested premises of its arguments travel with it.
+          if (!r)
+            r = sm.open(expr_ref(n->get_expr(), m));
+          if (csum)
+            sm.add_premises(csum->prem());
+        }
+        else {
+          switch (csum->mode()) {
+          case congr_sum::HORN:
+            // The run passes through the edge; the arguments' boundary
+            // equalities become premises of the run's clause.
+            if (!r)
+              r = sm.open(expr_ref(n->get_expr(), m));
+            sm.add_premises(csum->prem());
+            break;
+          case congr_sum::BOUNDARY:
+            // Cut the run at the edge: close on the left boundary application
+            // and reopen on the right one.
+            if (!r)
+              r = sm.open(expr_ref(n->get_expr(), m));
+            sm.add_premises(csum->left_prem());
             sm.close(rewrite_args(n->get_expr(), csum->left_args()));
-          } else { // open and close
-            sm.open(expr_ref(n->get_expr(), m));
-            sm.close(rewrite_args(n->get_expr(), csum->left_args()));
+            r = sm.open(rewrite_args(n->m_target->get_expr(), csum->right_args()));
+            sm.add_premises(csum->right_prem());
+            break;
+          case congr_sum::ARG_EQS:
+          case congr_sum::MARKED:
+            // Nothing to do at the edge itself: the arguments' contributions
+            // were emitted standalone by summarize_congr.
+            break;
           }
-          // open for the next one
-          r = sm.open(rewrite_args(n->m_target->get_expr(), csum->right_args()));
         }
       }
-      if (!r && j.is_marked()) { // new summary starts (colorable)
+      else if (!r && j.is_marked()) { // new summary starts (colorable)
         r = sm.open(expr_ref(n->get_expr(), m));
-      } else if (r && !j.is_marked() && !j.is_congruence()) {
+      }
+      else if (r && !j.is_marked()) {
         sm.close(expr_ref(n->get_expr(), m));
         r = nullptr;
       }
@@ -66,6 +127,7 @@ namespace euf {
       SASSERT(n->m_target);
       n = n->m_target;
     }
+    open_prem.append(sm.m_prem);
     return r;
   }
 
@@ -106,27 +168,40 @@ namespace euf {
     }
   }
 
-  void euf_summarizer::summarize_trans(enode *a, enode *b, expr_ref &a_sum,
-                                       expr_ref &b_sum) {
+  void euf_summarizer::summarize_trans(enode *a, enode *b, expr_ref &a_sum, expr_ref &b_sum,
+                                       expr_ref_vector &a_prem, expr_ref_vector &b_prem) {
     enode *lca = m_eg.find_lca(a, b);
     purify_branch(a, lca);
     purify_branch(b, lca);
+    expr_ref_vector lprem(m), rprem(m);
     expr_ref lhs(m);
-    lhs = summarize_branch(a, lca, a_sum);
+    lhs = summarize_branch(a, lca, a_sum, a_prem, lprem);
     expr_ref rhs(m);
-    rhs = summarize_branch(b, lca, b_sum);
+    rhs = summarize_branch(b, lca, b_sum, b_prem, rprem);
     if (!lhs)
       lhs = lca->get_expr();
     if (!rhs)
       rhs = lca->get_expr();
 
-    if (lhs == a->get_expr() && a_sum == nullptr)
-      a_sum = rhs;
-    if (rhs == b->get_expr() && b_sum == nullptr)
-      b_sum = lhs;
+    // The run spanning the lca is the union of both branches' open runs.
+    expr_ref_vector span(m);
+    span.append(lprem);
+    for (expr *p : rprem)
+      push_unique(span, p);
 
-    if (lhs != a->get_expr() && rhs != b->get_expr() && lhs != rhs)
-      m_sum.push_back(mk_eq_ordered(m, lhs, rhs));
+    if (lhs == a->get_expr() && a_sum == nullptr) {
+      a_sum = rhs;
+      a_prem.reset();
+      a_prem.append(span);
+    }
+    if (rhs == b->get_expr() && b_sum == nullptr) {
+      b_sum = lhs;
+      b_prem.reset();
+      b_prem.append(span);
+    }
+
+    if (lhs != a->get_expr() && rhs != b->get_expr())
+      emit(span, lhs, rhs);
   }
 
   const euf_summarizer::congr_sum &euf_summarizer::summarize_congr(enode *c) {
@@ -140,12 +215,27 @@ namespace euf {
     m_ccsum.emplace(&j, m); // create new entry in the cache
     congr_sum &csum = m_ccsum.find(&j)->second;
 
-    // When the function symbol is not usable in the summarized side (local to
-    // the other side), the congruence F(..)=F(..) cannot appear in the summary;
-    // its contribution is the equalities between the (summarized) arguments.
-    bool f_colorable = sym_colorable(c);
+    expr *L = c->get_expr();
+    expr *R = c->m_target->get_expr();
+
+    // A "flat" endpoint is one the summarized side cannot use (it contains a
+    // symbol local to the other side), so no summarized run can reach it: the
+    // arguments' summarized-side runs on that side are emitted standalone and
+    // the endpoint itself serves as the boundary. Legacy mode (no shared-symbol
+    // oracle) decides by the function symbol alone, as the code originally did.
+    bool flatL, flatR;
+    if (legacy_modes())
+      flatL = flatR = !sym_colorable(c);
+    else {
+      flatL = !term_usable(L);
+      flatR = !term_usable(R);
+    }
+    bool both_flat = flatL && flatR;
 
     expr_ref a_sum(m), b_sum(m);
+    expr_ref_vector a_prem(m), b_prem(m);
+    expr_ref_vector horn_prem(m);   // HORN: boundary equalities + their premises
+    expr_ref_vector nested(m);      // premises of fully summarized-side argument paths
     unsigned init_sz = m_sum.size();
     unsigned last_sz = init_sz;
 
@@ -158,46 +248,117 @@ namespace euf {
 
       a_sum = nullptr;
       b_sum = nullptr;
+      a_prem.reset();
+      b_prem.reset();
 
-      bool arg_is_B = false;
+      bool fully_a = false;
 
-      if (an != bn) {
-        summarize_trans(an, bn, a_sum, b_sum);
-        if (!f_colorable) {
-          // Emit the argument equality at its shared boundary (as sum_eq does).
-          if (a_sum && a_sum != an->get_expr())
-            m_sum.push_back(mk_eq_ordered(m, an->get_expr(), a_sum));
-          if (b_sum && b_sum != bn->get_expr() && a_sum != bn->get_expr())
-            m_sum.push_back(mk_eq_ordered(m, bn->get_expr(), b_sum));
-          // Fully-colorable argument: its summary is the bare argument equality.
-          if (m_sum.size() == last_sz && a_sum == bn->get_expr() && b_sum == an->get_expr())
-            m_sum.push_back(mk_eq_ordered(m, an->get_expr(), bn->get_expr()));
-          last_sz = m_sum.size();
-        }
-        else {
-          if (m_sum.size() == last_sz) {
-            if (a_sum == bn->get_expr() && b_sum == an->get_expr()) {
-              a_sum = b_sum;
-              arg_is_B = true;
-            }
-          }
-          last_sz = m_sum.size();
-        }
+      if (an == bn) {
+        // Identical argument: trivially summarized-side. (Legacy mode kept the
+        // original miscount, treating it as not colorable.)
+        fully_a = !legacy_modes();
+      }
+      else {
+        summarize_trans(an, bn, a_sum, b_sum, a_prem, b_prem);
+        fully_a = m_sum.size() == last_sz && a_sum == bn->get_expr() && b_sum == an->get_expr();
       }
 
-      expr_ref arg1(m);
-      expr_ref arg2(m);
-      arg1 = a_sum ? a_sum : an->get_expr();
-      arg2 = b_sum ? b_sum : bn->get_expr();
-      csum.insert_args(arg1, arg2, arg_is_B);
+      if (both_flat) {
+        // Neither endpoint is usable: the arguments' summarized runs are the
+        // whole contribution, each emitted at its shared boundary (as sum_eq does).
+        if (an != bn) {
+          if (a_sum && a_sum != an->get_expr())
+            emit(a_prem, an->get_expr(), a_sum);
+          if (b_sum && b_sum != bn->get_expr() && a_sum != bn->get_expr())
+            emit(b_prem, bn->get_expr(), b_sum);
+          // Fully-colorable argument: its summary is the bare argument equality.
+          if (m_sum.size() == last_sz && fully_a)
+            emit(a_prem, an->get_expr(), bn->get_expr());
+        }
+        expr_ref arg1(a_sum ? a_sum : an->get_expr(), m);
+        expr_ref arg2(b_sum ? b_sum : bn->get_expr(), m);
+        csum.insert_args(arg1, arg2, false);
+        last_sz = m_sum.size();
+        continue;
+      }
+
+      if (fully_a && an != bn) {
+        // an = bn is proved entirely by the summarized side (under the nested
+        // premises a_prem == b_prem); represent the position by an on both sides.
+        a_sum = b_sum;
+      }
+      // A flat side's boundary is the endpoint itself: its argument runs cannot
+      // join a run through the endpoint, so they are emitted standalone.
+      if (flatL) {
+        if (a_sum && a_sum != an->get_expr())
+          emit(a_prem, an->get_expr(), a_sum);
+        a_sum = nullptr;
+      }
+      if (flatR) {
+        if (b_sum && b_sum != bn->get_expr() && (flatL || a_sum != bn->get_expr()))
+          emit(b_prem, bn->get_expr(), b_sum);
+        b_sum = nullptr;
+      }
+
+      expr_ref arg1(a_sum ? a_sum : an->get_expr(), m);
+      expr_ref arg2(b_sum ? b_sum : bn->get_expr(), m);
+      csum.insert_args(arg1, arg2, fully_a);
+
+      if (fully_a) {
+        // The equality an = bn used on the right side rests on the nested premises.
+        for (expr *p : a_prem)
+          push_unique(nested, p);
+      }
+      else {
+        // HORN: the boundary equality arg1 = arg2, under the premises of the
+        // two boundary runs, justifies the congruence for the run passing through.
+        if (arg1 != arg2)
+          push_unique(horn_prem, mk_eq_ordered(m, arg1, arg2));
+        for (expr *p : a_prem) push_unique(horn_prem, p);
+        for (expr *p : b_prem) push_unique(horn_prem, p);
+        // BOUNDARY: each boundary application rests on its own side's run premises.
+        for (expr *p : a_prem) push_unique(csum.left_prem(), p);
+        for (expr *p : b_prem) push_unique(csum.right_prem(), p);
+      }
+      last_sz = m_sum.size();
     }
 
-    // Fold the congruence into the summary only if all arguments are colorable
-    // AND the function symbol itself is usable in the summarized side.
-    if (f_colorable && csum.is_colorable()) {
+    if (both_flat) {
+      csum.set_mode(congr_sum::ARG_EQS);
+      return csum;
+    }
+
+    // Fold the congruence into the run only if all arguments are summarized-side
+    // and both endpoints are usable by that side.
+    if (!flatL && !flatR && csum.is_colorable()) {
       csum.reset();
       c->m_justification.set_mark(true);
       m_sum.shrink(init_sz);
+      csum.set_mode(congr_sum::MARKED);
+      csum.prem().append(nested);
+      return csum;
+    }
+
+    // Cut the run at the boundary applications when they are shared terms;
+    // otherwise let the run pass through and carry the argument equalities as
+    // premises. A flat side's application is the endpoint itself, which the run
+    // never enters, so BOUNDARY is the only option there.
+    bool boundary = legacy_modes() || flatL || flatR;
+    if (!boundary) {
+      expr_ref bl = rewrite_args(L, csum.left_args());
+      expr_ref br = rewrite_args(R, csum.right_args());
+      boundary = term_shared(bl) && term_shared(br);
+    }
+    if (boundary) {
+      csum.set_mode(congr_sum::BOUNDARY);
+      for (expr *p : nested)
+        push_unique(csum.right_prem(), p);
+    }
+    else {
+      csum.set_mode(congr_sum::HORN);
+      csum.prem().append(horn_prem);
+      for (expr *p : nested)
+        push_unique(csum.prem(), p);
     }
     return csum;
   }
@@ -206,11 +367,12 @@ namespace euf {
     SASSERT(a->get_root() == b->get_root());
 
     expr_ref a_sum(m), b_sum(m);
-    summarize_trans(a, b, a_sum, b_sum);
+    expr_ref_vector a_prem(m), b_prem(m);
+    summarize_trans(a, b, a_sum, b_sum, a_prem, b_prem);
     if (a_sum && a_sum != a->get_expr())
-      m_sum.push_back(mk_eq_ordered(m, a->get_expr(), a_sum));
+      emit(a_prem, a->get_expr(), a_sum);
     if (b_sum && b_sum != b->get_expr() && a_sum != b->get_expr())
-      m_sum.push_back(mk_eq_ordered(m, b->get_expr(), b_sum));
+      emit(b_prem, b->get_expr(), b_sum);
   }
 
 } // namespace euf

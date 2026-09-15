@@ -150,7 +150,21 @@ namespace sat {
         m_var_mark.append(var_marks);
         m_atoms.reserve(var_marks.size(), nullptr);
         m_unit_label.reserve(var_marks.size(), nullptr);
-        compute_symbol_marks();
+        if (!m_sym_marks_fixed)
+            compute_symbol_marks();
+    }
+
+    void itp_visitor::color_symbols(expr_ref_vector const& A, expr_ref_vector const& B) {
+        m_sym_mark.reset();
+        for (expr* e : A) mark_symbols(e, MARK_A);
+        for (expr* e : B) mark_symbols(e, MARK_B);
+        m_sym_marks_fixed = true;
+        IF_VERBOSE(2, {
+            verbose_stream() << "itp symbol marks (from input clauses):";
+            for (auto const& kv : m_sym_mark)
+                verbose_stream() << " " << kv.m_key->get_name() << "=" << ab_mark_to_string(kv.m_value);
+            verbose_stream() << "\n";
+        });
     }
 
     // Color uninterpreted symbols by the marks of the atoms they occur in

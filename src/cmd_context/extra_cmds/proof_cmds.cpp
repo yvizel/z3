@@ -302,6 +302,11 @@ public:
 
     // Configure an interpolation visitor with the real atoms and theory hints.
     void init_itp_visitor(sat::itp_visitor& itp) {
+        // Symbol colors come from the original A/B input clauses (the same
+        // sets check_interpolant uses for the vocabulary condition), not from
+        // the trimmed core: a symbol that occurs only in dropped clauses of
+        // one side is still in that side's vocabulary.
+        itp.color_symbols(m_A, m_B);
         // Provide the real boolean atoms (bool_var == atom id) so that term/symbol
         // coloring is over the actual EUF terms.
         for (auto const& clause : m_clauses)
