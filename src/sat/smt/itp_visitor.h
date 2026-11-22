@@ -66,7 +66,7 @@ namespace sat {
     };
 
     class itp_visitor : public proof_visitor {
-
+    protected:
         // Per-occurrence literal label of the labeled interpolation system.
         // We use uniform per-variable labels: locality forces A-local
         // variables to a and B-local to b; shared variables follow the
@@ -168,7 +168,7 @@ namespace sat {
         // (before replay). Symbols of A get A, of B get B, of both AB.
         void color_symbols(expr_ref_vector const& A, expr_ref_vector const& B);
 
-    private:
+    protected:
 
         // EUF interpolation of a theory lemma: parse the negated clause into an
         // (A, B) pair (alpha = literals whose atom is not B-only) and delegate to

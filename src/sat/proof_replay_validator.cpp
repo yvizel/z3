@@ -132,7 +132,9 @@ namespace sat {
             unsigned undef_idx = m_clause.size();
             for (unsigned i = 0; i < m_clause.size(); ++i) {
                 sat::literal lit = (*cl)[i];
-                if (s.value(lit) != l_undef)
+                if (s.value(lit) == l_true)
+                    return false; // clause is satisfied, nothing to propagate
+                if (s.value(lit) == l_false)
                     continue;
                 if (undef_idx < m_clause.size())
                     return false;
@@ -686,7 +688,33 @@ namespace sat {
             }
 
             literal_vector learnt;
-            if (traverse(v, proof_clause, learnt)) {
+            bool traversed;
+            if (probe && s.m_conflict.is_none() && s.m_not_l != null_literal && s.lvl(s.m_not_l) == 0) {
+                // The probe conflicted immediately: a literal t of the target is
+                // already true at level 0, so the target is implied by t's
+                // level-0 derivation. The LRAT-style chain is the one that
+                // justifies t (its reason, then the reasons of the reason's
+                // other literals), not a resolution against the negated
+                // decision, which is no clause of the proof.
+                literal t = s.m_not_l;
+                justification js = s.get_justification(t);
+                proof_clause_ref reason;
+                if (js.is_none()) {
+                    reason.m_valid = true;
+                    reason.m_lits.push_back(t);
+                    v.chainClauses.reset();
+                    v.chainPivots.reset();
+                    v.chainClauses.push_back(reason);
+                    learnt.reset();
+                    learnt.push_back(t);
+                    traversed = true;
+                }
+                else
+                    traversed = mk_proof_clause(t, js, reason) && traverse_bounded(v, reason, t, PART_ALL, learnt);
+            }
+            else
+                traversed = traverse(v, proof_clause, learnt);
+            if (traversed) {
                 literal_vector normalized_learnt;
                 normalized_learnt.append(learnt);
                 normalize_clause(normalized_learnt);

@@ -258,7 +258,7 @@ On \code{itp\_reorder.smt2} --- two thirty-step implication chains over
 equality atoms with color pattern $A\,A\,B$ repeating --- the raw
 interpolant with reordering is a flat, CNF-like conjunction with one small
 clause per color-run boundary; with \opt{solver.proof.reorder=false} it is a
-deeply nested $\vee/\wedge$ alternation of the same size (179 nodes) that
+deeply nested $\vee/\wedge$ alternation of the same size (187 nodes) that
 simplification cannot flatten. On tree-shaped EUF ladders the final
 interpolants coincide with and without reordering: $\wedge/\vee$ are
 associative--commutative, so re-association alone vanishes under
@@ -326,7 +326,7 @@ partial interpolants are not strength-ordered leaf-wise across labelings,
 so with theory lemmas present a violation is reported as advisory; on the
 current suite the order holds strictly everywhere, and on
 \code{itp\_reorder.smt2} both reverse implications fail, i.e.\ the three
-systems are strictly separated (179 / 209 / 179 raw nodes with three
+systems are strictly separated (187 / 217 / 187 raw nodes with three
 distinct shapes).
 
 \section{Colorability-Directed Labeling}

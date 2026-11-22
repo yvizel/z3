@@ -29,6 +29,7 @@ z3_add_component(sat_smt
     euf_interpolator.cpp
     intblast_solver.cpp
     itp_visitor.cpp
+    cert_visitor.cpp
     fpa_solver.cpp
     pb_card.cpp
     pb_constraint.cpp

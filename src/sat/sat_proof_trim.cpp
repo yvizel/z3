@@ -164,12 +164,26 @@ namespace sat {
             s.m_assignment[l.index()] = l_undef;
             s.m_assignment[(~l).index()] = l_undef;
         };
+
+        // l occurs in cl; is cl the clause that implied l? A clause may contain
+        // literals that were already true when it was added (the proof log keeps
+        // input clauses in their original form), and such a literal must keep
+        // its assignment: it is justified elsewhere, and if it is an input unit
+        // nothing could re-derive it.
+        auto implied_by_cl = [&](literal l) {
+            auto js = s.get_justification(l);
+            switch (cl.size()) {
+            case 1:  return js.is_none();
+            case 2:  return js.is_binary_clause() && m_in_clause.contains(js.get_literal().index());
+            default: return js.is_clause() && cp && &s.get_clause(js) == cp;
+            }
+        };
         
         bool on_trail = false;
         unsigned j = 0;
         for (unsigned i = 0; i < s.trail_size(); ++i) {
             literal l = s.trail_literal(i);
-            if (m_in_clause.contains(l.index())) {
+            if (m_in_clause.contains(l.index()) && implied_by_cl(l)) {
                 SASSERT(!on_trail);
                 on_trail = true;
                 unassign_literal(l);
@@ -238,11 +252,31 @@ namespace sat {
        queried for their explanation. Their explanation is added to the clauses.
        
     */
+    /**
+     * cl contains a literal that is already true at level 0: the clause is
+     * implied by the level-0 trail (this happens for clauses logged in their
+     * original form that were satisfied by earlier units). Probing by asserting
+     * ~cl would conflict on that literal with no clause to blame; instead the
+     * dependencies of the step are the justification chain of the literal.
+     */
+    bool proof_trim::implied_by_trail(literal_vector const& cl) {
+        for (auto lit : cl) {
+            if (s.value(lit) == l_true && s.lvl(lit) == 0) {
+                IF_VERBOSE(3, verbose_stream() << "implied by level-0 literal " << lit << "\n");
+                add_dependency(lit);
+                return true;
+            }
+        }
+        return false;
+    }
+
     void proof_trim::conflict_analysis_core(literal_vector const& cl, clause* cp) {
         IF_VERBOSE(3, verbose_stream() << "core " << cl << "\n");
         
         unsigned trail_size0 = s.m_trail.size();
         bool probe = !cl.empty() && !s.inconsistent();
+        if (probe && implied_by_trail(cl))
+            return;
         if (probe) {
             SASSERT(!s.inconsistent());
             s.push();
@@ -290,6 +324,8 @@ namespace sat {
         bool res = false;
         unsigned trail_size0 = s.m_trail.size();
         bool probe = !cl.empty() && !s.inconsistent();
+        if (probe && implied_by_trail(cl))
+            return true;
         if (probe) {
             SASSERT(!s.inconsistent());
             s.push();
@@ -509,7 +545,9 @@ namespace sat {
             unsigned undef_idx = m_clause.size();
             for (unsigned i = 0; i < m_clause.size(); ++i) {
                 sat::literal lit = (*cl)[i];
-                if (s.value(lit) != l_undef)
+                if (s.value(lit) == l_true)
+                    return false; // clause is satisfied, nothing to propagate
+                if (s.value(lit) == l_false)
                     continue;
                 if (undef_idx < m_clause.size())
                     return false;

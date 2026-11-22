@@ -50,6 +50,8 @@ Proof checker for clauses created during search.
 #include "sat/sat_proof_trim.h"
 #include "sat/smt/euf_proof_checker.h"
 #include "sat/smt/itp_visitor.h"
+#include "sat/smt/cert_visitor.h"
+#include <fstream>
 #include "ast/ast_pp.h"
 #include "ast/rewriter/th_rewriter.h"
 #include "solver/solver.h"
@@ -78,6 +80,7 @@ class proof_trim {
     bool                    m_check_labeling_order = false;
     symbol                  m_itp_labeling = symbol("mcmillan");
     symbol                  m_itp_label_opt = symbol("none");
+    symbol                  m_certificate;    // file to write the interpolation certificate to (empty: none)
     
     void mk_clause(expr_ref_vector const& clause) {
         trim.init_clause();
@@ -149,6 +152,10 @@ public:
 
     void set_itp_label_opt(symbol const& s) {
         m_itp_label_opt = s;
+    }
+
+    void set_certificate(symbol const& s) {
+        m_certificate = s;
     }
     
     void del(expr_ref_vector const& _clause) {
@@ -384,6 +391,30 @@ public:
         implies(i_hkp, i_dual, "hkp => dual");
     }
 
+    // Export the interpolation certificate: a second replay of the trimmed
+    // proof with the certificate visitor (same labeling and initialization as
+    // the interpolating replay), serialized together with the raw interpolant.
+    void write_certificate(vector<std::pair<unsigned, unsigned_vector>> const& ids, expr* raw_interpolant, std::ostream& out) {
+        sat::cert_visitor cert(m);
+        if (m_itp_labeling == "hkp")
+            cert.set_labeling(sat::itp_labeling::hkp);
+        else if (m_itp_labeling == "dual")
+            cert.set_labeling(sat::itp_labeling::dual);
+        init_itp_visitor(cert);
+        std::ostringstream sink;
+        trim.replay_with_visitor(ids, cert, sink);
+        cert.set_raw_interpolant(raw_interpolant);
+        std::ofstream file(m_certificate.str());
+        if (!file) {
+            out << "; certificate: cannot open " << m_certificate << "\n";
+            return;
+        }
+        if (cert.write(file))
+            out << "; certificate written to " << m_certificate << "\n";
+        else
+            out << "; certificate NOT written: " << cert.error() << "\n";
+    }
+
     void do_trim(std::ostream& out, bool replay) {
         ast_pp_util pp(m);
         auto ids = trim.trim();
@@ -404,6 +435,8 @@ public:
             trim.replay_with_visitor(ids, itp, out);
             expr_ref interpolant = itp.get_interpolant();
             IF_VERBOSE(1, if (interpolant) verbose_stream() << "; raw interpolant (" << get_num_exprs(interpolant) << " nodes): " << mk_pp(interpolant, m) << "\n");
+            if (m_certificate.is_non_empty_string())
+                write_certificate(ids, interpolant, out);
             // Simplify the interpolant expression before reporting it.
             if (interpolant) {
                 th_rewriter rw(m);
@@ -622,6 +655,7 @@ public:
             trim().set_itp_labeling(sp.proof_itp_labeling());
             trim().set_check_labeling_order(sp.proof_check_labeling_order());
             trim().set_itp_label_opt(sp.proof_itp_label_opt());
+            trim().set_certificate(sp.proof_certificate());
         }
     }
 

@@ -417,10 +417,20 @@ namespace sat {
             unsigned old_sz = num_lits;
             bool keep = m_trim || simplify_clause(num_lits, lits);
             TRACE(sat_mk_clause, tout << "mk_clause (after simp), keep: " << keep << "\n" << mk_lits_pp(num_lits, lits) << "\n";);
+            if (m_config.m_drat && st.is_input() && (!keep || old_sz > num_lits)) {
+                // simplify_clause permutes lits in place, so lits[0..old_sz) is still the
+                // original clause. Log that as the input clause, and demote the simplified
+                // version to a derived (RUP) clause: it follows from the original together
+                // with the base-level units, and presenting it as input would misattribute
+                // it (e.g. for interpolation, where a literal removed by a unit of the other
+                // partition would silently move information across the A/B boundary).
+                drat_log_clause(old_sz, lits, st);
+                st = sat::status::asserted();
+            }
             if (!keep) {
                 return nullptr; // clause is equivalent to true.
             }
-            // if an input clause is simplified, then log the simplified version as learned
+            // if a clause is simplified, then log the simplified version as derived
             if (m_config.m_drat && old_sz > num_lits) {
                 drat_log_clause(num_lits, lits, st);
                 logged = true;
@@ -443,13 +453,18 @@ namespace sat {
                 assign(lits[0], justification(0));
             }
             return nullptr;
-        case 2:
+        case 2: {
+            // a simplified clause was already logged above; do not log it a second time
+            flet<bool> _disable_drat(m_config.m_drat, m_config.m_drat && !logged);
             mk_bin_clause(lits[0], lits[1], st);
             if (redundant && m_par) 
                 m_par->share_clause(*this, lits[0], lits[1]);
             return nullptr;
-        default:
+        }
+        default: {
+            flet<bool> _disable_drat(m_config.m_drat, m_config.m_drat && !logged);
             return mk_nary_clause(num_lits, lits, st);
+        }
         }
     }
 

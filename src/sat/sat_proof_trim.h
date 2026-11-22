@@ -77,6 +77,7 @@ namespace sat {
 
         void prune_trail(literal_vector const& cl, clause* cp);
         void conflict_analysis_core(literal_vector const& cl, clause* cp);
+        bool implied_by_trail(literal_vector const& cl);
         bool conflict_analysis(literal_vector const& cl, clause* cp);
 
         void add_dependency(literal lit);
