@@ -222,7 +222,7 @@ namespace sat {
     // Parse the negated theory clause into an (A, B) pair and delegate to the
     // shared-consequence EUF interpolator. A literal is in B (beta) iff its atom
     // contains a B-local symbol; otherwise A (alpha).
-    expr_ref itp_visitor::euf_interpolant(literal_vector const& clause) {
+    expr_ref itp_visitor::euf_interpolant(literal_vector const& clause, euf_interpolator::cert* c) {
         svector<euf_interpolator::atom> atoms;
         for (literal l : clause) {
             expr* atom = m_atoms.get(l.var(), nullptr);
@@ -247,7 +247,7 @@ namespace sat {
             atoms.push_back({ s, t, is_diseq, side });
         }
         euf_interpolator itp(m);
-        return itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); });
+        return itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); }, c);
     }
 
     expr* itp_visitor::mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark) {

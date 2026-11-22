@@ -52,6 +52,7 @@ namespace sat {
             ab_mark         mark = MARK_NONE;
             expr*           hint = nullptr;    // theory leaves
             expr*           lemma_itp = nullptr; // theory leaves: Z3's partial interpolant
+            euf_interpolator::cert euf;        // theory leaves: EUF certificate (euf.ok tells if present)
             unsigned        anchor = UINT_MAX; // chains
             unsigned_vector parents;           // chains
             literal_vector  pivots;            // chains: pivot literal as it occurs in the current resolvent
@@ -72,6 +73,8 @@ namespace sat {
 
         std::string term(expr* e);
         void json_formula(std::ostream& out, expr* e);
+        void json_euf(std::ostream& out, euf_interpolator::cert const& c, literal_vector const& clause);
+        static int json_lit(literal l) { int v = static_cast<int>(l.var()) + 1; return l.sign() ? -v : v; }
         void json_lits(std::ostream& out, literal_vector const& lits);
         static void json_string(std::ostream& out, std::string const& s);
 

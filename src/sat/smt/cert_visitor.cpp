@@ -82,9 +82,11 @@ namespace sat {
         unsigned sid = new_step(clause, theory ? "theory" : "input", mark);
         if (theory) {
             m_steps[sid].hint = m_theory_hint[id];
-            expr_ref J = euf_interpolant(clause);
+            expr_ref J = euf_interpolant(clause, &m_steps[sid].euf);
             if (!J)
                 fail("certificate: theory lemma " + std::to_string(id) + " has no EUF partial interpolant (generic fallback used)");
+            else if (!m_steps[sid].euf.ok)
+                IF_VERBOSE(1, verbose_stream() << "certificate: theory lemma " << id << " without EUF certificate: " << m_steps[sid].euf.error << "\n");
             m_steps[sid].lemma_itp = clause_label(clause);
         }
         else if (mark != MARK_A && mark != MARK_B)
@@ -181,10 +183,55 @@ namespace sat {
         out << "[";
         for (unsigned i = 0; i < lits.size(); ++i) {
             if (i > 0) out << ", ";
-            int v = static_cast<int>(lits[i].var()) + 1;
-            out << (lits[i].sign() ? -v : v);
+            out << json_lit(lits[i]);
         }
         out << "]";
+    }
+
+    // The euf object of a theory leaf; atom indices of the certificate are
+    // indices into the lemma's clause (euf_interpolant builds one atom per
+    // clause literal, in order).
+    void cert_visitor::json_euf(std::ostream& out, euf_interpolator::cert const& c, literal_vector const& clause) {
+        typedef euf_interpolator::cert cert;
+        auto lit_of_atom = [&](unsigned a) { return json_lit(clause[a]); };
+        auto run = [&](cert::run const& r, bool with_header, unsigned id) {
+            out << "{";
+            if (with_header)
+                out << "\"id\": " << id << ", \"side\": \"" << (r.side_a ? "A" : "B") << "\", \"lhs\": "
+                    << "" , json_string(out, term(r.lhs)), out << ", \"rhs\": ", json_string(out, term(r.rhs)), out << ", ";
+            out << "\"premises\": [";
+            for (unsigned i = 0; i < r.premises.size(); ++i) { if (i) out << ", "; out << r.premises[i]; }
+            out << "], \"steps\": [";
+            for (unsigned i = 0; i < r.steps.size(); ++i) {
+                cert::step const& st = r.steps[i];
+                if (i) out << ", ";
+                switch (st.kind) {
+                case cert::rule::refl:       out << "{\"rule\": \"refl\", \"term\": "; json_string(out, term(st.term)); out << "}"; break;
+                case cert::rule::assumption: out << "{\"rule\": \"assumption\", \"lit\": " << lit_of_atom(st.atom) << "}"; break;
+                case cert::rule::premise:    out << "{\"rule\": \"premise\", \"run\": " << st.run << "}"; break;
+                case cert::rule::symm:       out << "{\"rule\": \"symm\", \"of\": " << st.first << "}"; break;
+                case cert::rule::trans:      out << "{\"rule\": \"trans\", \"first\": " << st.first << ", \"second\": " << st.second << "}"; break;
+                case cert::rule::congr:
+                    out << "{\"rule\": \"congr\", \"function\": ";
+                    json_string(out, st.f->get_name().str());
+                    out << ", \"args\": [";
+                    for (unsigned k = 0; k < st.args.size(); ++k) { if (k) out << ", "; out << st.args[k]; }
+                    out << "]}";
+                    break;
+                }
+            }
+            out << "]}";
+        };
+        out << "{\"conflict_side\": \"" << (c.conflict_side_a ? "A" : "B") << "\", \"disequality\": " << lit_of_atom(c.diseq_atom)
+            << ", \"runs\": [";
+        for (unsigned i = 0; i < c.runs.size(); ++i) {
+            if (i) out << ", ";
+            out << "\n        ";
+            run(c.runs[i], true, i);
+        }
+        out << "], \"final\": ";
+        run(c.final, false, 0);
+        out << "}";
     }
 
     // Formula tree over equality atoms.
@@ -290,6 +337,10 @@ namespace sat {
                 json_string(body, s.hint ? term(s.hint) : "");
                 body << ", \"itp\": ";
                 if (s.lemma_itp) json_formula(body, s.lemma_itp); else body << "null";
+                if (s.euf.ok) {
+                    body << ", \"euf\": ";
+                    json_euf(body, s.euf, s.lits);
+                }
             }
             else {
                 body << ", \"anchor\": " << s.anchor << ", \"chain\": [";

@@ -60,13 +60,48 @@ namespace sat {
             ab_mark side;      // MARK_A: alpha, MARK_B: beta, MARK_AB: gamma (both sides)
         };
 
+        // Certificate of the lemma and of its partial interpolant, in the shape
+        // of the Lean library's equality-exchange proofs (craig-congruence,
+        // docs/certificate.md, section "Theory leaves"): a DAG of runs, each a
+        // shared equality derived by one side from its own atoms and from
+        // conclusions ("premises") of runs of the other side, and a final
+        // derivation of the violated disequality's equality on the conflict side.
+        struct cert {
+            enum class rule { refl, assumption, premise, symm, trans, congr };
+            struct step {
+                rule            kind;
+                expr*           term = nullptr;   // refl
+                unsigned        atom = UINT_MAX;  // assumption: index into the atoms vector
+                unsigned        run = UINT_MAX;   // premise: run id
+                unsigned        first = UINT_MAX; // symm (of), trans (first), 
+                unsigned        second = UINT_MAX;// trans
+                func_decl*      f = nullptr;      // congr
+                unsigned_vector args;             // congr
+            };
+            struct run {
+                bool            side_a;
+                expr*           lhs = nullptr;
+                expr*           rhs = nullptr;
+                unsigned_vector premises;         // run ids of the other side
+                svector<step>   steps;            // last step concludes lhs = rhs
+            };
+            bool            conflict_side_a = false;
+            unsigned        diseq_atom = UINT_MAX; // index into the atoms vector
+            svector<run>    runs;
+            run             final;                 // derivation of the disequality's equality
+            bool            ok = false;
+            std::string     error;
+        };
+
         euf_interpolator(ast_manager& m): m(m) {}
 
         // Compute the partial interpolant for the (A, B) pair described by atoms.
         // sym_mark(f) gives the A/B/AB color of an uninterpreted symbol; it is used
         // to decide whether a congruence's function symbol is usable in the side
         // being summarized. Returns null if the case is not handled (caller falls back).
-        expr_ref interpolate(svector<atom> const& atoms, std::function<ab_mark(func_decl*)> const& sym_mark);
+        // When c is given, it is filled with a certificate of the result (c->ok
+        // tells whether that succeeded; the interpolant is returned regardless).
+        expr_ref interpolate(svector<atom> const& atoms, std::function<ab_mark(func_decl*)> const& sym_mark, cert* c = nullptr);
     };
 
 }

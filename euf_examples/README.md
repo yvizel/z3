@@ -49,7 +49,7 @@ Useful additional options:
 | `horn_local_arg.smt2` | as above, with an A-local argument term `a` between `F(a)` and the shared `x` | the Horn premise is the *boundary* equality `x = y`, not `a = y`; the absorbed A-run `a = x` is never emitted |
 | `horn_nested.smt2` | shared `F` over an A-local `G`: `F(G(x)) = F(G(y))` | nested premises: the inner A-local congruence contributes `x = y`, the outer congruence's boundary applications `F(G(x))` are not shared, so the premise propagates up: `(=> (= x y) (= u v))` |
 | `horn_mixed_args.smt2` | shared `F` with one A-local-through-`G` position and one B-equal position | boundary applications would embed `G`; Horn mode collects both positions: `(=> (and (= p q) (= x y)) (= u v))` |
-| `horn_dual.smt2` | violated disequality in A, B-local `F` | the B-side Horn summary is negated: `(not (=> (= x y) (= u v)))` |
+| `horn_dual.smt2` | violated disequality in A, B-local `F` | dual case: A's exchange contributions and the negation of the premises of A's final derivation, `(and (= x y) (not (= u v)))` (equivalent to the negated B-side Horn summary `(not (=> (= x y) (= u v)))`) |
 | `boundary_bonly.smt2` | shared `F` applied to a B-local constant on both sides | congruence whose endpoint terms are B-only: only the argument equality `a = b` is emitted (mode ARG_EQS); guards the endpoint-color classification |
 | `horn_deep.smt2` | `F(G(H(x))) = F(G(H(y)))`, all three A-local | one premise propagates through three nested HORN congruences: `(=> (= x y) (= u v))` |
 | `horn_two_congr.smt2` | `u ~ F(x1)=F(y1) ~ G(x2)=G(y2) ~ v`, F, G A-local | two HORN congruences on one run collect on one clause: `(=> (and (= x2 y2) (= x1 y1)) (= u v))` |
@@ -58,7 +58,7 @@ Useful additional options:
 | `horn_alt_ladder.smt2` | argument ladder `x0 ~A x1 ~B x2 ~A x3 ~B x4` | same pattern as a ladder: `(and (= x2 x3) (=> (= x1 x4) (= u v)))` |
 | `horn_ternary.smt2` | ternary A-local `F(x,c,p) = F(y,c,q)` | identical position contributes nothing, the two B-equal positions one premise each: `(=> (and (= x y) (= p q)) (= u v))` |
 | `horn_and_boundary.smt2` | `u ~ F(x)=F(y) ~ H(a)=H(b)`, F A-local, H shared | HORN and BOUNDARY on the same run: `(=> (= x y) (= u (H a)))` — the run is cut at the shared `H(a)`. Symbol colors are taken from the original A/B input clauses (not the trimmed core), so `H` counts as shared even if the B clause mentioning it is not needed by the refutation |
-| `horn_dual_mixed.smt2` | A-side disequality, B-local `F(G(x),p) = F(G(y),q)` | negated two-premise Horn summary of B: `(not (=> (and (= p q) (= x y)) (= u v)))` |
+| `horn_dual_mixed.smt2` | A-side disequality, B-local `F(G(x),p) = F(G(y),q)` | dual case with two premises: `(and (= p q) (= x y) (not (= u v)))` (equivalent to the negated B summary `(not (=> (and (= p q) (= x y)) (= u v)))`) |
 | `horn_disjunctive.smt2` | A only knows `u = F(x) ∨ u = F(z)`, F A-local | two EUF lemmas with Horn interpolants resolved on an A-local atom; McMillan disjoins them: `(or (=> (= y z) (= u v)) (=> (= x y) (= u v)))` |
 | `horn_kitchen_sink.smt2` | A-local F, G, K and shared H in one refutation | nested MARKED-with-premise `G`, two-premise HORN `F`, BOUNDARY `H`, then a second HORN run: `(and (=> (and (= p q) (= x y)) (= u (H a))) (=> (= c d) (= w v)))` |
 | `sym_from_input.smt2` | shared `H` whose only B occurrence is in a clause the trimmer drops | symbol colors are taken from the original A/B input clauses, so `H` stays shared and the run is cut at `H(a)`/`H(b)` (BOUNDARY): `(and (=> (= x y) (= u (H a))) (= v (H b)))`; with core-based coloring this degraded to a HORN premise `a = b` |
@@ -70,6 +70,18 @@ three `check_interpolant` checks.
 
 The pre-existing `iuc_cubes-*.smt2` and `complex_itp.smt2` in the
 repository root exercise the same pipeline on congruence-heavy cubes.
+
+## Certificates
+
+`solver.proof.certificate=<file>` additionally exports a JSON certificate of
+the trimmed proof and of every EUF lemma (the equality-exchange runs, their
+premises and explicit refl/assumption/premise/symm/trans/congr derivations),
+checked by `craig-certify` in the craig-congruence repository and by
+`benchmarks/tools/check_euf_cert.py`. For an A-side disequality (dual case)
+the lemma interpolant is the Lean extraction of that structure: the Horn
+clauses of A's runs and the negative clause of the premises of A's final
+derivation. This coincides with the negated B summary when B contributes a
+single run (all examples here) and is a valid interpolant in general.
 
 ## Shape of EUF lemma interpolants
 

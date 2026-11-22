@@ -51,6 +51,7 @@ Author:
 
 #include "ast/ast.h"
 #include "sat/proof_visitor.h"
+#include "sat/smt/euf_interpolator.h"
 #include "util/map.h"
 #include "util/obj_hashtable.h"
 #include "util/hash.h"
@@ -174,7 +175,7 @@ namespace sat {
         // (A, B) pair (alpha = literals whose atom is not B-only) and delegate to
         // euf_interpolator. Returns the partial interpolant, or null if the lemma
         // is not handled (non-equality atoms, unhandled conflict shape).
-        expr_ref euf_interpolant(literal_vector const& clause);
+        expr_ref euf_interpolant(literal_vector const& clause, euf_interpolator::cert* c = nullptr);
 
     public:
         itp_visitor(ast_manager& m):
