@@ -110,8 +110,17 @@ namespace euf {
             break;
           case congr_sum::ARG_EQS:
           case congr_sum::MARKED:
-            // Nothing to do at the edge itself: the arguments' contributions
-            // were emitted standalone by summarize_congr.
+            // The edge itself contributes nothing: the arguments' contributions
+            // were emitted standalone by summarize_congr. A run that is open
+            // here ends at this term, though: the summarized side does not own
+            // the edge, so the run must not be carried across it. (A run can be
+            // open at an unusable term after a BOUNDARY cut reopened on a flat
+            // endpoint; carrying it over would emit an equality between the
+            // two endpoints of this edge that the summarized side never derived.)
+            if (r) {
+              sm.close(expr_ref(n->get_expr(), m));
+              r = nullptr;
+            }
             break;
           }
         }

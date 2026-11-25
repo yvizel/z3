@@ -502,6 +502,16 @@ namespace euf {
         if (m.is_ite(e))
             num = 0;
         
+        // Interpolation: remember which input group(s) each uninterpreted
+        // symbol occurs in (terms created outside input internalization,
+        // e.g. by Ackermann axioms, have no group and add nothing).
+        if (m_itp_group != 0 && is_app(e) && to_app(e)->get_decl()->get_family_id() == null_family_id) {
+            unsigned g = 0;
+            func_decl* f = to_app(e)->get_decl();
+            m_itp_sym_group.find(f, g);
+            m_itp_sym_group.insert(f, g | m_itp_group);
+        }
+
         enode* n = m_egraph.mk(e, m_generation, num, args);
         if (si.is_bool_op(e)) 
             m_egraph.set_cgc_enabled(n, false);

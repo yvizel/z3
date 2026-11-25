@@ -54,8 +54,8 @@ Useful additional options:
 | `horn_deep.smt2` | `F(G(H(x))) = F(G(H(y)))`, all three A-local | one premise propagates through three nested HORN congruences: `(=> (= x y) (= u v))` |
 | `horn_two_congr.smt2` | `u ~ F(x1)=F(y1) ~ G(x2)=G(y2) ~ v`, F, G A-local | two HORN congruences on one run collect on one clause: `(=> (and (= x2 y2) (= x1 y1)) (= u v))` |
 | `horn_two_runs.smt2` | two A-runs through A-local congruences, separated by a B link `p = q` | one Horn clause per run: `(and (=> (= x y) (= p u)) (=> (= x2 y2) (= q v)))` |
-| `horn_interleaved.smt2` | argument path `a ~A x ~B y ~A w ~B z ~A d` under A-local `F` | premise is the outer boundary equality `x = z`; the interior A-run is its own conjunct so B can derive the premise: `(and (= y w) (=> (= x z) (= u v)))` |
-| `horn_alt_ladder.smt2` | argument ladder `x0 ~A x1 ~B x2 ~A x3 ~B x4` | same pattern as a ladder: `(and (= x2 x3) (=> (= x1 x4) (= u v)))` |
+| `horn_interleaved.smt2` | argument path `a ~A x ~B y ~A w ~B z ~A d` under A-local `F` | A derives the whole argument path itself and receives only B's two links, each a run of B between shared terms: `(=> (and (= x y) (= w z)) (= u v))`. A's interior link `y = w` is not exposed |
+| `horn_alt_ladder.smt2` | argument ladder `x0 ~A x1 ~B x2 ~A x3 ~B x4` | same pattern as a ladder: `(=> (and (= x1 x2) (= x3 x4)) (= u v))` |
 | `horn_ternary.smt2` | ternary A-local `F(x,c,p) = F(y,c,q)` | identical position contributes nothing, the two B-equal positions one premise each: `(=> (and (= x y) (= p q)) (= u v))` |
 | `horn_and_boundary.smt2` | `u ~ F(x)=F(y) ~ H(a)=H(b)`, F A-local, H shared | HORN and BOUNDARY on the same run: `(=> (= x y) (= u (H a)))` — the run is cut at the shared `H(a)`. Symbol colors are taken from the original A/B input clauses (not the trimmed core), so `H` counts as shared even if the B clause mentioning it is not needed by the refutation |
 | `horn_dual_mixed.smt2` | A-side disequality, B-local `F(G(x),p) = F(G(y),q)` | dual case with two premises: `(and (= p q) (= x y) (not (= u v)))` (equivalent to the negated B summary `(not (=> (and (= p q) (= x y)) (= u v)))`) |
@@ -86,13 +86,45 @@ single run (all examples here) and is a valid interpolant in general.
 ## Shape of EUF lemma interpolants
 
 A lemma's partial interpolant is a conjunction of Horn clauses over shared
-terms, one per maximal run of summarized-side edges in the colored egraph
-proof forest (`src/ast/euf/euf_summary.h`). A congruence edge on the run
-is handled by the color of its *endpoint terms*: it joins the run when all
-argument paths are summarized-side (MARKED); otherwise the run is cut at
-the rewritten applications over the arguments' boundary terms when those
-applications are shared (BOUNDARY), or passes through with the boundary
-equalities as premises when they are not (HORN); a congruence neither of
-whose endpoints is usable by the summarized side only contributes its
-arguments' runs (ARG_EQS). Plain equalities are the empty-premise case, so
-examples without Horn-mode congruences print exactly as before.
+terms, read off the proof of the lemma's conflict in one colored egraph
+(`src/sat/smt/euf_interpolator.cpp`, class `directed`). Each side derives
+what it can from its own atoms; a congruence is derived by whichever side
+needs it, through its arguments. What a side cannot derive it receives from
+the other side as a *run*: a maximal stretch of the proof path made of the
+other side's atoms and of congruences it derives, concluded as one equality
+between shared terms. A run of A that itself received runs of B is the Horn
+clause "B's equalities => A's equality"; a conflict on A's side adds the
+negation of the equalities A's final derivation received.
+
+Both ends of a run are shared terms. Where the proof path offers no shared
+term, the run ends inside a congruence `f(a1..an) ~ f(b1..bn)` with `f`
+shared, at the application `f(l1..ln)` of shared terms `li` at which each
+argument path is split between the two sides; that term need not occur in
+the lemma. When a run can end in several places it ends as early as
+possible: a side keeps a congruence it can derive unaided, otherwise the run
+is cut at a shared term or inside the congruence, and only as a last choice
+does it pass through the congruence with premises from the other side (the
+case of a function symbol local to one side, as in `Z3HornGap.smt2`).
+Plain equalities are the empty-premise case.
+
+## Known limitations of EUF lemma interpolation
+
+- **Double cut of one congruence edge (open, to revisit).** A run's two ends
+  must be shared terms. When a path node is not shared, the run may end
+  inside the adjacent congruence edge `f(a) ~ f(b)` at `f(l)`, where the
+  argument path is split at one shared term `l`. The procedure supports this
+  at the start and at the end of a run, but only in different edges. A run
+  that is a single congruence edge with both endpoints non-shared would need
+  the edge cut twice, `f(a) ~ f(l1) ~ f(l2) ~ f(b)`, with each argument path
+  split at two shared terms. In that case the directed procedure fails and
+  the lemma is handled by the saturating equality exchange (counted by
+  `num_exchange_lemmas`, printed at verbosity 2). The same reasoning is
+  usually expressible as the other side owning the congruence with the
+  premise `l1 = l2` (the Horn case), which is tried first, so the case may be
+  unreachable; no lemma hitting it has been constructed and it fired on none
+  of the 149 problems certified so far. To settle: build a lemma that forces
+  it, or show the Horn alternative always applies.
+- Per lemma the procedure gives up after 200,000 derivation calls or recursion
+  depth 2,000 and falls back likewise. There is no completeness proof.
+- Only the `mcmillan` labeling is certified; atoms available to both sides
+  are not supported by the exchange or the certificate.

@@ -450,6 +450,9 @@ namespace euf {
         // (0 = none, 1 = A, 2 = B). When non-zero, the clause proof emits an
         // __itp_A/__itp_B marking on (assume ...) lines.
         unsigned m_itp_group = 0;
+        // Interpolation: input group(s) of every uninterpreted symbol
+        // (bit 0: A, bit 1: B), collected while the inputs are internalized.
+        obj_map<func_decl, unsigned> m_itp_sym_group;
 
         // decompile
         bool extract_pb(std::function<void(unsigned sz, literal const* c, unsigned k)>& card,
@@ -479,6 +482,12 @@ namespace euf {
         bool is_shared(euf::enode* n) const;
         bool is_beta_redex(euf::enode* p, euf::enode* n) const;
         bool enable_ackerman_axioms(expr* n) const;
+        // Interpolation: false if the given terms together mention both an
+        // A-local and a B-local symbol. An atom over such terms cannot be
+        // labeled, so axioms that would introduce one must not be generated.
+        bool itp_colorable(unsigned n, expr* const* es) const;
+        // True once input clauses were internalized under an interpolation group.
+        bool itp_mode() const { return !m_itp_sym_group.empty(); }
         bool is_fixed(euf::enode* n, expr_ref& val, sat::literal_vector& explain);
 
         // void add_assertion(expr* f);

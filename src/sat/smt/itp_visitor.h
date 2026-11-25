@@ -101,9 +101,8 @@ namespace sat {
 
         // A/B coloring of uninterpreted symbols: AB means the symbol occurs on
         // both sides (shared/common), i.e. may appear in the interpolant. Used
-        // by the EUF summarizer to decide whether a congruence's function
-        // symbol is usable in the summarized side and whether a boundary
-        // application is shared. Preferably fixed from the ORIGINAL A/B input
+        // by the EUF interpolator to decide which terms are shared, hence
+        // where a run may end. Preferably fixed from the ORIGINAL A/B input
         // clauses via color_symbols (the vocabulary condition of a Craig
         // interpolant is L(A) & L(B) of the original problem, and a symbol that
         // occurs only in clauses the trimmer dropped would otherwise be
@@ -128,7 +127,29 @@ namespace sat {
         bool is_shared(bool_var v) const { return var_mark(v) == MARK_AB; }
         bool is_a_local(bool_var v) const { return var_mark(v) == MARK_A; }
 
+        // Locality of a variable's atom by the colors of its uninterpreted
+        // symbols (fixed from the original inputs): MARK_A if it mentions an
+        // A-local symbol, MARK_B if a B-local one, MARK_AB if both (a mixed
+        // atom, for which no label is sound), MARK_NONE if all its symbols
+        // are shared or the atom/colors are unknown. Cached per variable.
+        mutable svector<char> m_locality;   // 0: not computed, else ab_mark + 1
+        mutable bool          m_has_mixed_atom = false;
+        bool                  m_has_nonshared_interpolant = false;  // a lemma interpolant used a non-shared symbol
+        unsigned              m_num_exchange = 0;                   // lemmas interpolated by the equality exchange
+        bool                  m_has_uninterpolated_lemma = false;   // an EUF lemma got no partial interpolant
+        ab_mark locality(bool_var v) const;
+
         lbl label(bool_var v) const {
+            // Locality is forced: an atom with an A-local symbol must be
+            // labeled a and one with a B-local symbol b, whatever clauses the
+            // variable happens to occur in. The clause-based mark is computed
+            // over the trimmed core only, so an atom that occurs in dropped
+            // input clauses and in theory lemmas has no mark at all.
+            switch (locality(v)) {
+            case MARK_A:  return lbl::a;
+            case MARK_B:  return lbl::b;
+            default: break;
+            }
             switch (var_mark(v)) {
             case MARK_A:  return lbl::a;
             case MARK_B:  return lbl::b;
@@ -205,6 +226,22 @@ namespace sat {
 
         // The computed interpolant (valid after replay reaches the empty clause).
         expr_ref get_interpolant() const { return m_interpolant; }
+
+        // True if some labeled atom mixes A-local and B-local symbols; the
+        // interpolant is then not guaranteed to be over shared symbols.
+        bool has_mixed_atom() const { return m_has_mixed_atom; }
+
+        // True if the partial interpolant of some theory lemma mentions a
+        // symbol that is not shared (self-check of the EUF interpolator).
+        bool has_nonshared_interpolant() const { return m_has_nonshared_interpolant; }
+
+        // True if the EUF interpolator returned no partial interpolant for a
+        // lemma over equality atoms (the generic leaf was used instead).
+        bool has_uninterpolated_lemma() const { return m_has_uninterpolated_lemma; }
+
+        // Number of theory lemmas whose summary was rejected and which were
+        // interpolated by the equality exchange instead.
+        unsigned num_exchange_lemmas() const { return m_num_exchange; }
 
         void visit_marks(svector<ab_mark> const& var_marks, svector<ab_mark> const& trail_marks) override;
         void visit_assumption(unsigned id, literal_vector const& clause, ab_mark mark = MARK_NONE) override;

@@ -943,6 +943,33 @@ namespace euf {
         }       
     }
 
+    bool solver::itp_colorable(unsigned n, expr* const* es) const {
+        if (m_itp_sym_group.empty())
+            return true;
+        bool has_a = false, has_b = false;
+        ptr_vector<expr> todo;
+        obj_hashtable<expr> seen;
+        for (unsigned i = 0; i < n; ++i)
+            todo.push_back(es[i]);
+        while (!todo.empty()) {
+            expr* e = todo.back();
+            todo.pop_back();
+            if (!is_app(e) || seen.contains(e))
+                continue;
+            seen.insert(e);
+            unsigned g = 0;
+            if (m_itp_sym_group.find(to_app(e)->get_decl(), g)) {
+                has_a |= g == 1;
+                has_b |= g == 2;
+                if (has_a && has_b)
+                    return false;
+            }
+            for (expr* arg : *to_app(e))
+                todo.push_back(arg);
+        }
+        return true;
+    }
+
     bool solver::enable_ackerman_axioms(expr* e) const {
         euf::enode* n = get_enode(e);
         if (!n)

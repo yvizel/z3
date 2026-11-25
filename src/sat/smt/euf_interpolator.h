@@ -8,32 +8,39 @@ Module Name:
 Abstract:
 
     EUF interpolation for a conjunction of (dis)equality literals split into an
-    (A, B) pair. Alternative to the egraph-summary approach (euf_summary): it
-    computes the interpolant from A's shared-vocabulary consequences.
+    (A, B) pair: the negation of a theory lemma. One procedure produces the
+    partial interpolant and its certificate.
 
     Given A (alpha) and B (beta), each a conjunction of equalities and
     disequalities, with A & B unsatisfiable in EUF:
 
-      1. Close A under congruence in an egraph and read off the equalities it
-         entails between AB-common (shared) terms.
-      2. Assert B together with those shared equalities in a second egraph.
-      3. The shared equalities that participate in explaining a B disequality
-         that has collapsed are exactly the conflict with B; their conjunction
-         is the interpolant (it is entailed by A, inconsistent with B, and over
-         shared symbols only).
+      1. If one side is unsatisfiable on its own the interpolant is true (B)
+         or false (A).
+      2. Otherwise all equalities are merged in one egraph and the proof of
+         the violated disequality is followed. Each side derives what it can
+         from its own atoms; what it cannot derive it receives from the other
+         side as a "run": an equality between shared terms that the other side
+         derives, possibly from runs it received in turn. Where a run would
+         end at a term that is not shared, it ends at a shared application
+         f(l1..ln) built from shared representatives of the arguments.
+      3. The interpolant is read off the runs the conflict depends on: every
+         A-run contributes the Horn clause "received equalities => its
+         equality", and a conflict on A's side the negation of the equalities
+         A's final derivation received.
 
-    Trivial cases are handled up front: B alone unsat -> true, A alone unsat ->
-    false. The dual case, where the violated disequality lies in A, is handled by
-    swapping the roles of A and B: the interpolant of (A, B) is the negation of
-    the interpolant of (B, A).
+    The runs and their derivations form the certificate (see `cert`), which is
+    exactly the equality-exchange proof of the Lean library, so the
+    interpolant returned is the one the certificate denotes.
+
+    A saturating variant of the same exchange is kept as a last resort for
+    lemmas the directed procedure cannot handle; `num_exchange` counts them and
+    is expected to stay zero.
 
     Atoms carry a three-valued side tag matching the labels of a labeled
     interpolation system: MARK_A (alpha only), MARK_B (beta only), or MARK_AB
     (gamma - available to both sides). The labeled T-lemma obligations are
-    alpha & gamma |= J and J & beta & gamma unsat, so gamma atoms join
-    whichever side is being summarized (and both trivial-case checks), which
-    is also the colorability-optimal placement: a larger summarized closure
-    yields longer single-colored runs and simpler summaries.
+    alpha & gamma |= J and J & beta & gamma unsat; gamma equalities are
+    assigned to the side opposite the conflict, whose runs make up J.
 
 Author:
 
@@ -49,7 +56,9 @@ Author:
 namespace sat {
 
     class euf_interpolator {
-        ast_manager& m;
+        ast_manager&    m;
+        expr_ref_vector m_pinned;        // terms created for certificates (shared applications, congruence results)
+        unsigned        m_num_exchange = 0;
 
     public:
         // A single (dis)equality literal of the negated theory clause.
@@ -93,12 +102,16 @@ namespace sat {
             std::string     error;
         };
 
-        euf_interpolator(ast_manager& m): m(m) {}
+        euf_interpolator(ast_manager& m): m(m), m_pinned(m) {}
+
+        // Number of lemmas the directed procedure could not handle and which
+        // were interpolated by the saturating equality exchange instead.
+        unsigned num_exchange() const { return m_num_exchange; }
 
         // Compute the partial interpolant for the (A, B) pair described by atoms.
-        // sym_mark(f) gives the A/B/AB color of an uninterpreted symbol; it is used
-        // to decide whether a congruence's function symbol is usable in the side
-        // being summarized. Returns null if the case is not handled (caller falls back).
+        // sym_mark(f) gives the A/B/AB color of an uninterpreted symbol; a term is
+        // shared when all its symbols are colored AB. Returns null if no
+        // interpolant was found (caller falls back).
         // When c is given, it is filled with a certificate of the result (c->ok
         // tells whether that succeeded; the interpolant is returned regardless).
         expr_ref interpolate(svector<atom> const& atoms, std::function<ab_mark(func_decl*)> const& sym_mark, cert* c = nullptr);

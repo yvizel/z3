@@ -169,14 +169,40 @@ namespace sat {
         out << '"';
     }
 
+    // SMT-LIB text of a term. Applications of uninterpreted symbols, which is
+    // all that certificates contain, are printed directly and memoized per
+    // sub-term: the general pretty printer takes milliseconds on the deeply
+    // nested terms of some lemmas, and the same terms are printed many times.
     std::string cert_visitor::term(expr* e) {
-        params_ref p;
-        p.set_uint("min_alias_size", UINT_MAX);
-        p.set_uint("max_depth", UINT_MAX);
-        p.set_bool("single_line", true);
-        std::ostringstream o;
-        o << mk_ismt2_pp(e, m, p);
-        return o.str();
+        std::string r;
+        if (m_term_text.find(e, r))
+            return r;
+        if (is_app(e) && to_app(e)->get_family_id() == null_family_id) {
+            app* a = to_app(e);
+            symbol const& nm = a->get_decl()->get_name();
+            std::string name = is_smt2_quoted_symbol(nm) ? mk_smt2_quoted_symbol(nm) : nm.str();
+            if (a->get_num_args() == 0)
+                r = name;
+            else {
+                r = "(" + name;
+                for (expr* arg : *a) {
+                    r += " ";
+                    r += term(arg);
+                }
+                r += ")";
+            }
+        }
+        else {
+            params_ref p;
+            p.set_uint("min_alias_size", UINT_MAX);
+            p.set_uint("max_depth", UINT_MAX);
+            p.set_bool("single_line", true);
+            std::ostringstream o;
+            o << mk_ismt2_pp(e, m, p);
+            r = o.str();
+        }
+        m_term_text.insert(e, r);
+        return r;
     }
 
     void cert_visitor::json_lits(std::ostream& out, literal_vector const& lits) {
@@ -194,13 +220,32 @@ namespace sat {
     void cert_visitor::json_euf(std::ostream& out, euf_interpolator::cert const& c, literal_vector const& clause) {
         typedef euf_interpolator::cert cert;
         auto lit_of_atom = [&](unsigned a) { return json_lit(clause[a]); };
+        // Only the runs the conflict depends on are exported, renumbered in
+        // order. A run that nothing refers to contributes nothing to the
+        // exchange proof, and its conclusion need not be a sub-term of the
+        // lemma's interpolant, so its terms may no longer exist by now.
+        bool_vector live(c.runs.size(), false);
+        unsigned_vector todo;
+        for (unsigned id : c.final.premises) todo.push_back(id);
+        while (!todo.empty()) {
+            unsigned id = todo.back();
+            todo.pop_back();
+            if (id >= c.runs.size() || live[id]) continue;
+            live[id] = true;
+            for (unsigned p : c.runs[id].premises) todo.push_back(p);
+        }
+        unsigned_vector new_id(c.runs.size(), UINT_MAX);
+        unsigned num_live = 0;
+        for (unsigned i = 0; i < c.runs.size(); ++i)
+            if (live[i]) new_id[i] = num_live++;
+        auto rid = [&](unsigned id) { return id < new_id.size() ? new_id[id] : id; };
         auto run = [&](cert::run const& r, bool with_header, unsigned id) {
             out << "{";
             if (with_header)
                 out << "\"id\": " << id << ", \"side\": \"" << (r.side_a ? "A" : "B") << "\", \"lhs\": "
                     << "" , json_string(out, term(r.lhs)), out << ", \"rhs\": ", json_string(out, term(r.rhs)), out << ", ";
             out << "\"premises\": [";
-            for (unsigned i = 0; i < r.premises.size(); ++i) { if (i) out << ", "; out << r.premises[i]; }
+            for (unsigned i = 0; i < r.premises.size(); ++i) { if (i) out << ", "; out << rid(r.premises[i]); }
             out << "], \"steps\": [";
             for (unsigned i = 0; i < r.steps.size(); ++i) {
                 cert::step const& st = r.steps[i];
@@ -208,7 +253,7 @@ namespace sat {
                 switch (st.kind) {
                 case cert::rule::refl:       out << "{\"rule\": \"refl\", \"term\": "; json_string(out, term(st.term)); out << "}"; break;
                 case cert::rule::assumption: out << "{\"rule\": \"assumption\", \"lit\": " << lit_of_atom(st.atom) << "}"; break;
-                case cert::rule::premise:    out << "{\"rule\": \"premise\", \"run\": " << st.run << "}"; break;
+                case cert::rule::premise:    out << "{\"rule\": \"premise\", \"run\": " << rid(st.run) << "}"; break;
                 case cert::rule::symm:       out << "{\"rule\": \"symm\", \"of\": " << st.first << "}"; break;
                 case cert::rule::trans:      out << "{\"rule\": \"trans\", \"first\": " << st.first << ", \"second\": " << st.second << "}"; break;
                 case cert::rule::congr:
@@ -224,55 +269,116 @@ namespace sat {
         };
         out << "{\"conflict_side\": \"" << (c.conflict_side_a ? "A" : "B") << "\", \"disequality\": " << lit_of_atom(c.diseq_atom)
             << ", \"runs\": [";
+        bool first_run = true;
         for (unsigned i = 0; i < c.runs.size(); ++i) {
-            if (i) out << ", ";
+            if (!live[i]) continue;
+            if (!first_run) out << ", ";
+            first_run = false;
             out << "\n        ";
-            run(c.runs[i], true, i);
+            run(c.runs[i], true, new_id[i]);
         }
         out << "], \"final\": ";
         run(c.final, false, 0);
         out << "}";
     }
 
-    // Formula tree over equality atoms.
-    void cert_visitor::json_formula(std::ostream& out, expr* e) {
-        expr* a = nullptr, *b = nullptr;
-        if (m.is_true(e)) { out << "true"; return; }
-        if (m.is_false(e)) { out << "false"; return; }
-        if (m.is_not(e, a)) { out << "{\"not\": "; json_formula(out, a); out << "}"; return; }
-        if (m.is_and(e) || m.is_or(e)) {
-            out << (m.is_and(e) ? "{\"and\": [" : "{\"or\": [");
-            app* ap = to_app(e);
-            for (unsigned i = 0; i < ap->get_num_args(); ++i) {
-                if (i > 0) out << ", ";
-                json_formula(out, ap->get_arg(i));
+    // Formulas are exported as a DAG (certificate format version 2): every
+    // distinct expression is one entry of the top-level "nodes" array, whose
+    // sub-formulas are {"ref": j} with j smaller than the entry's own index.
+    // Partial interpolants are hash-consed and heavily shared, so writing
+    // them as trees is exponential. The traversal is iterative: chains of
+    // conjunctions can be tens of thousands deep.
+    unsigned cert_visitor::node_id(expr* root) {
+        unsigned id = 0;
+        if (m_node_id.find(root, id))
+            return id;
+        ptr_vector<expr> todo;
+        todo.push_back(root);
+        ptr_buffer<expr> kids;
+        while (!todo.empty()) {
+            expr* e = todo.back();
+            if (m_node_id.contains(e)) {
+                todo.pop_back();
+                continue;
             }
-            out << "]}";
-            return;
+            expr* a = nullptr, * b = nullptr;
+            char const* op = nullptr;
+            kids.reset();
+            bool is_atom = false;
+            if (m.is_true(e) || m.is_false(e)) {
+            }
+            else if (m.is_not(e, a)) {
+                op = "not";
+                kids.push_back(a);
+            }
+            else if (m.is_and(e) || m.is_or(e)) {
+                op = m.is_and(e) ? "and" : "or";
+                for (expr* arg : *to_app(e))
+                    kids.push_back(arg);
+            }
+            else if (m.is_implies(e, a, b)) {
+                op = "implies";
+                kids.push_back(a);
+                kids.push_back(b);
+            }
+            else if (m.is_eq(e, a, b) && !m.is_bool(a)) {
+                is_atom = true;
+            }
+            else if (m.is_eq(e, a, b)) {
+                op = "iff";
+                kids.push_back(a);
+                kids.push_back(b);
+            }
+            else {
+                std::ostringstream o;
+                o << "certificate: unsupported formula node " << mk_pp(e, m);
+                fail(o.str());
+            }
+            bool ready = true;
+            for (expr* k : kids) {
+                if (!m_node_id.contains(k)) {
+                    todo.push_back(k);
+                    ready = false;
+                }
+            }
+            if (!ready)
+                continue;
+            todo.pop_back();
+            std::ostream& out = m_nodes;
+            if (m_num_nodes > 0)
+                out << ",";
+            out << "\n    ";
+            if (m.is_true(e))
+                out << "true";
+            else if (m.is_false(e))
+                out << "false";
+            else if (is_atom) {
+                out << "{\"eq\": [";
+                json_string(out, term(a));
+                out << ", ";
+                json_string(out, term(b));
+                out << "]}";
+            }
+            else if (!op)
+                out << "null";
+            else if (kids.size() == 1 && op[0] == 'n')
+                out << "{\"not\": {\"ref\": " << m_node_id[kids[0]] << "}}";
+            else {
+                out << "{\"" << op << "\": [";
+                for (unsigned k = 0; k < kids.size(); ++k) {
+                    if (k > 0) out << ", ";
+                    out << "{\"ref\": " << m_node_id[kids[k]] << "}";
+                }
+                out << "]}";
+            }
+            m_node_id.insert(e, m_num_nodes++);
         }
-        if (m.is_implies(e, a, b)) {
-            out << "{\"implies\": [";
-            json_formula(out, a); out << ", "; json_formula(out, b);
-            out << "]}";
-            return;
-        }
-        if (m.is_eq(e, a, b) && !m.is_bool(a)) {
-            out << "{\"eq\": [";
-            json_string(out, term(a)); out << ", "; json_string(out, term(b));
-            out << "]}";
-            return;
-        }
-        if (m.is_eq(e, a, b) || m.is_iff(e)) {
-            app* ap = to_app(e);
-            out << "{\"iff\": [";
-            json_formula(out, ap->get_arg(0)); out << ", "; json_formula(out, ap->get_arg(1));
-            out << "]}";
-            return;
-        }
-        std::ostringstream o;
-        o << "certificate: unsupported formula node " << mk_pp(e, m);
-        fail(o.str());
-        out << "null";
+        return m_node_id[root];
+    }
+
+    // A formula position: a reference into the node table.
+    void cert_visitor::json_formula(std::ostream& out, expr* e) {
+        out << "{\"ref\": " << node_id(e) << "}";
     }
 
     bool cert_visitor::write(std::ostream& out) {
@@ -281,9 +387,19 @@ namespace sat {
         if (!m_ab_vars.empty())
             fail("certificate: per-variable ab labels (itp_label_opt) are not supported");
 
+        // Only the atoms the trimmed proof uses are exported (and labeled):
+        // the proof log defines many more, e.g. atoms of dropped clauses.
+        uint_set used;
+        for (step const& s : m_steps) {
+            for (literal l : s.lits)
+                used.insert(l.var());
+            for (literal l : s.pivots)
+                used.insert(l.var());
+        }
+
         std::ostringstream body;
         body << "{\n";
-        body << "  \"format\": \"euf-itp-certificate\",\n  \"version\": 1,\n";
+        body << "  \"format\": \"euf-itp-certificate\",\n  \"version\": 2,\n";
         body << "  \"labeling\": \"mcmillan\",\n";
 
         // symbols with colors
@@ -304,7 +420,7 @@ namespace sat {
         first = true;
         for (unsigned v = 0; v < m_atoms.size(); ++v) {
             expr* a = m_atoms[v];
-            if (!a)
+            if (!a || !used.contains(v))
                 continue;
             expr* l = nullptr, *r = nullptr;
             if (!m.is_eq(a, l, r) || m.is_bool(l)) {
@@ -322,6 +438,12 @@ namespace sat {
             body << ", \"label\": \"" << (label(v) == lbl::a ? "a" : "b") << "\"}";
         }
         body << "\n  ],\n";
+        if (has_mixed_atom())
+            fail("certificate: the proof uses an atom that mixes A-local and B-local symbols");
+        if (has_nonshared_interpolant())
+            fail("certificate: a theory lemma's partial interpolant uses a non-shared symbol");
+        if (has_uninterpolated_lemma())
+            fail("certificate: an EUF lemma has no partial interpolant");
 
         // steps
         body << "  \"steps\": [";
@@ -357,11 +479,12 @@ namespace sat {
 
         body << "  \"interpolant\": ";
         if (m_raw_interpolant) json_formula(body, m_raw_interpolant); else body << "null";
-        body << "\n}\n";
+        body << ",\n";
 
         if (!m_error.empty())
             return false;
         out << body.str();
+        out << "  \"nodes\": [" << m_nodes.str() << "\n  ]\n}\n";
         return true;
     }
 

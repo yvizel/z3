@@ -71,7 +71,13 @@ namespace sat {
         unsigned new_step(literal_vector const& lits, char const* kind, ab_mark mark);
         void fail(std::string const& msg);
 
+        obj_map<expr, std::string> m_term_text;   // memo of term()
         std::string term(expr* e);
+        // formula DAG: expression -> index in the "nodes" array
+        obj_map<expr, unsigned> m_node_id;
+        std::ostringstream      m_nodes;
+        unsigned                m_num_nodes = 0;
+        unsigned node_id(expr* e);
         void json_formula(std::ostream& out, expr* e);
         void json_euf(std::ostream& out, euf_interpolator::cert const& c, literal_vector const& clause);
         static int json_lit(literal l) { int v = static_cast<int>(l.var()) + 1; return l.sign() ? -v : v; }

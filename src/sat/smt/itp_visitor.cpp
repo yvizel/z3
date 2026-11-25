@@ -205,6 +205,42 @@ namespace sat {
         }
     }
 
+    ab_mark itp_visitor::locality(bool_var v) const {
+        if (v < m_locality.size() && m_locality[v] != 0)
+            return static_cast<ab_mark>(m_locality[v] - 1);
+        expr* a = v < m_atoms.size() ? m_atoms[v] : nullptr;
+        if (!a || !m_sym_marks_fixed)
+            return MARK_NONE;
+        bool has_a = false, has_b = false;
+        ptr_vector<expr> todo;
+        obj_hashtable<expr> seen;
+        todo.push_back(a);
+        while (!todo.empty()) {
+            expr* e = todo.back();
+            todo.pop_back();
+            if (!is_app(e) || seen.contains(e))
+                continue;
+            seen.insert(e);
+            func_decl* f = to_app(e)->get_decl();
+            if (f->get_family_id() == null_family_id) {
+                ab_mark mk = MARK_NONE;
+                m_sym_mark.find(f, mk);
+                has_a |= mk == MARK_A;
+                has_b |= mk == MARK_B;
+            }
+            for (expr* arg : *to_app(e))
+                todo.push_back(arg);
+        }
+        ab_mark r = has_a ? (has_b ? MARK_AB : MARK_A) : (has_b ? MARK_B : MARK_NONE);
+        if (r == MARK_AB && !m_has_mixed_atom) {
+            m_has_mixed_atom = true;
+            IF_VERBOSE(0, verbose_stream() << "itp: atom " << mk_pp(a, m) << " mixes A-local and B-local symbols\n");
+        }
+        m_locality.reserve(v + 1, 0);
+        m_locality[v] = static_cast<char>(r) + 1;
+        return r;
+    }
+
     ab_mark itp_visitor::symbol_mark(func_decl* f) const {
         ab_mark m0 = MARK_NONE;
         m_sym_mark.find(f, m0);
@@ -247,7 +283,56 @@ namespace sat {
             atoms.push_back({ s, t, is_diseq, side });
         }
         euf_interpolator itp(m);
-        return itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); }, c);
+        expr_ref J = itp.interpolate(atoms, [this](func_decl* f) { return symbol_mark(f); }, c);
+        m_num_exchange += itp.num_exchange();
+        if (c) {
+            // The certificate outlives the interpolator, which owns the terms
+            // the exchange created; keep every term it refers to alive.
+            auto pin_run = [&](euf_interpolator::cert::run const& r) {
+                if (r.lhs) pin(r.lhs);
+                if (r.rhs) pin(r.rhs);
+                for (auto const& st : r.steps)
+                    if (st.term) pin(st.term);
+            };
+            for (auto const& r : c->runs)
+                pin_run(r);
+            pin_run(c->final);
+        }
+        if (!J) {
+            // All atoms are equalities, so the lemma is in the interpolator's
+            // fragment and it still found no interpolant. The caller falls back
+            // to the generic leaf, which is not a partial interpolant of the lemma.
+            m_has_uninterpolated_lemma = true;
+            IF_VERBOSE(0, verbose_stream() << "itp: no partial interpolant for an EUF lemma; using the generic leaf\n");
+        }
+        // Self-check: a lemma's partial interpolant must be over shared
+        // symbols. A violation means the interpolant of the whole proof may
+        // not be a Craig interpolant; it is reported and recorded.
+        if (J && m_sym_marks_fixed) {
+            ptr_vector<expr> todo;
+            obj_hashtable<expr> seen;
+            todo.push_back(J);
+            func_decl* bad = nullptr;
+            while (!todo.empty() && !bad) {
+                expr* e = todo.back();
+                todo.pop_back();
+                if (!is_app(e) || seen.contains(e))
+                    continue;
+                seen.insert(e);
+                func_decl* f = to_app(e)->get_decl();
+                if (f->get_family_id() == null_family_id && symbol_mark(f) != MARK_AB)
+                    bad = f;
+                for (expr* arg : *to_app(e))
+                    todo.push_back(arg);
+            }
+            if (bad) {
+                if (!m_has_nonshared_interpolant)
+                    IF_VERBOSE(0, verbose_stream() << "itp: partial interpolant of a theory lemma uses the non-shared symbol "
+                               << bad->get_name() << ": " << mk_pp(J, m) << "\n");
+                m_has_nonshared_interpolant = true;
+            }
+        }
+        return J;
     }
 
     expr* itp_visitor::mk_theory_leaf(unsigned id, literal_vector const& clause, expr* hint, ab_mark mark) {

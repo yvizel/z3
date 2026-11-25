@@ -10,16 +10,10 @@ Abstract:
     Implementation of the EUF interpolator for an (A, B) conjunction of
     (dis)equalities. See header.
 
-    The interpolant is obtained by colored proof-forest summarization:
-      - build the full egraph from all equalities, tagging one side's merges;
-      - locate the disequality that the conflict violates;
-      - summarize the path between its sides, which yields equalities over
-        shared terms (introducing shared function applications at congruence
-        color boundaries).
-
-    For a conflict whose violated disequality lies in B, the interpolant is the
-    summary of A's contribution; for one in A it is the negation of the summary
-    of B's contribution (Itp(A,B) = not Itp(B,A)).
+    The file has three parts: `deriver`, which reads explicit derivation steps
+    off an egraph (used by the saturating exchange); the saturating equality
+    exchange, kept as a last resort; and `directed`, the proof-directed
+    procedure that interpolates every lemma in practice.
 
 Author:
 
@@ -28,12 +22,14 @@ Author:
 --*/
 
 #include "sat/smt/euf_interpolator.h"
+#include "ast/ast_pp.h"
 #include "ast/euf/euf_egraph.h"
 #include "ast/euf/euf_enode.h"
-#include "ast/euf/euf_summary.h"
 #include "util/obj_hashtable.h"
 #include "util/uint_set.h"
 #include "util/obj_pair_hashtable.h"
+#include "util/buffer.h"
+#include <algorithm>
 
 namespace sat {
 
@@ -73,17 +69,12 @@ namespace sat {
     }
 
     // ---------------------------------------------------------------------
-    // Certificate construction.
+    // Derivations from an egraph.
     //
-    // The summarizer's clauses (prem -> lhs = rhs) are the runs of the
-    // summarized side S. Their derivations, the derivations of their premises
-    // by the other side T, and the final derivation of the violated
-    // disequality on the conflict side are all obtained independently of the
-    // summarizer's traversal: a small egraph is built from the side's equality
-    // atoms plus the available premises, closed under congruence, and the
-    // proof-forest path between the two terms is read off as explicit
-    // refl/assumption/premise/symm/trans/congr steps. Runs are created in
-    // layers so that every premise refers to an earlier run.
+    // `deriver` builds a small egraph from one side's equality atoms plus
+    // premises, closes it under congruence, and reads the proof-forest path
+    // between two terms off as explicit refl/assumption/premise/symm/trans/
+    // congr steps. It serves the saturating exchange below.
     // ---------------------------------------------------------------------
 
     typedef euf_interpolator::cert cert;
@@ -245,187 +236,1005 @@ namespace sat {
             uint_set const& used_runs() const { return m_used_runs; }
             std::string const& error() const { return m_error; }
         };
+    }
 
-        // One Horn clause of the summary.
-        struct horn {
-            expr_ref_vector prem;
-            expr*           lhs;
-            expr*           rhs;
-            horn(ast_manager& m): prem(m), lhs(nullptr), rhs(nullptr) {}
+
+    // ---------------------------------------------------------------------
+    // Equality exchange.
+    //
+    // A saturating interpolation procedure for the (A, B) pair, used only
+    // when the directed procedure below fails. It follows the
+    // cooperative congruence-closure scheme the Lean library formalizes
+    // (EqualityInterpolationConflict): the two sides alternate, each closing
+    // its own equalities together with the shared equalities received so
+    // far, and announcing every new equality between shared terms. The pool of
+    // shared terms starts with the shared subterms of the lemma and is
+    // extended with f(s1..sn) whenever a side has an application f(a1..an)
+    // of a shared symbol whose arguments it knows equal to shared terms si -
+    // this is what lets a side talk about an application over its own local
+    // arguments. The exchange stops when one side violates one of its
+    // disequalities.
+    //
+    // The interpolant is read off the announcements that the final conflict
+    // depends on: every such A-announcement contributes the Horn clause
+    // "received premises => equality", and an A-side conflict contributes the
+    // negative clause of its premises. Every clause is over shared terms by
+    // construction, and the certificate is exactly this structure.
+    // ---------------------------------------------------------------------
+
+    namespace {
+        struct announcement {
+            bool  side_a;
+            expr* lhs;
+            expr* rhs;
         };
 
-        bool parse_horn(ast_manager& m, expr* e, horn& h) {
-            expr* body = nullptr, * head = e;
-            if (m.is_implies(e, body, head)) {
-                if (m.is_and(body))
-                    for (expr* p : *to_app(body)) h.prem.push_back(p);
-                else
-                    h.prem.push_back(body);
+        bool is_shared_term(expr* e, std::function<bool(func_decl*)> const& shared, obj_map<expr, bool>& memo) {
+            bool r;
+            if (memo.find(e, r))
+                return r;
+            r = true;
+            if (is_app(e)) {
+                func_decl* f = to_app(e)->get_decl();
+                if (f->get_family_id() == null_family_id && !shared(f))
+                    r = false;
+                for (expr* arg : *to_app(e))
+                    if (r && !is_shared_term(arg, shared, memo))
+                        r = false;
             }
-            return m.is_eq(head, h.lhs, h.rhs);
+            else
+                r = false;
+            memo.insert(e, r);
+            return r;
         }
     }
 
-    // Build the certificate for a conflict whose violated disequality is atom
-    // `diseq`, on side `diseq_is_a`, given the summary clauses of the side S
-    // opposite to it. In the dual case (disequality in A) the resulting
-    // interpolant in the Lean shape is returned through `dual_itp`.
-    static void build_cert(ast_manager& m, svector<atom> const& atoms, bool diseq_is_a, unsigned diseq,
-                           expr_ref_vector const& sum, cert& c, expr_ref& dual_itp) {
-        c.ok = false;
-        c.runs.reset();
-        c.conflict_side_a = diseq_is_a;
-        c.diseq_atom = diseq;
-        bool summarize_a = !diseq_is_a;
-
-        // S-runs to build: the summary clauses.
-        vector<horn> clauses;
-        for (expr* e : sum) {
-            horn h(m);
-            if (!parse_horn(m, e, h)) { c.error = "unparsable summary clause"; return; }
-            clauses.push_back(std::move(h));
+    // The interpolant a certificate denotes, as the Lean checker extracts it
+    // (EqualityInterpolationConflict.interpolant): only the runs reachable
+    // from the final derivation's premises count. Every reachable A-side run
+    // contributes the Horn clause "premises => lhs = rhs"; a conflict on side
+    // A adds the negative clause of the final premises. Runs the conflict does
+    // not depend on contribute nothing, so a lemma's partial interpolant and
+    // its certificate always denote the same formula.
+    static expr_ref extract_interpolant(ast_manager& m, cert const& c) {
+        bool_vector reach(c.runs.size(), false);
+        unsigned_vector todo;
+        for (unsigned id : c.final.premises) todo.push_back(id);
+        while (!todo.empty()) {
+            unsigned id = todo.back();
+            todo.pop_back();
+            if (id >= c.runs.size() || reach[id]) continue;
+            reach[id] = true;
+            for (unsigned p : c.runs[id].premises) todo.push_back(p);
         }
-        // the distinct premise equalities, each to be derived by a T-run
-        expr_ref_vector prem_eqs(m);
-        for (auto const& h : clauses)
-            for (expr* p : h.prem)
-                if (!prem_eqs.contains(p))
-                    prem_eqs.push_back(p);
-
-        unsigned_vector clause_run(clauses.size(), UINT_MAX);   // S-run id per clause
-        obj_map<expr, unsigned> prem_run;                         // T-run id per premise equality
-        auto derived_s = [&](unsigned k) { return clause_run[k] != UINT_MAX; };
-
-        bool progress = true;
-        while (progress) {
-            progress = false;
-            // S-runs whose premises are all available
-            for (unsigned k = 0; k < clauses.size(); ++k) {
-                if (derived_s(k)) continue;
-                horn const& h = clauses[k];
-                bool ready = true;
-                for (expr* p : h.prem) if (!prem_run.contains(p)) { ready = false; break; }
-                if (!ready) continue;
-                cert::run r;
-                r.side_a = summarize_a;
-                r.lhs = h.lhs; r.rhs = h.rhs;
-                deriver d(m, atoms, r.steps);
-                d.assert_side(summarize_a);
-                for (expr* p : h.prem) {
-                    expr* pl = nullptr, * pr = nullptr;
-                    VERIFY(m.is_eq(p, pl, pr));
-                    unsigned id = prem_run[p];
-                    r.premises.push_back(id);
-                    d.assert_premise(id, pl, pr);
-                }
-                if (!d.derive(h.lhs, h.rhs)) { c.error = "summary clause not derivable: " + d.error(); return; }
-                clause_run[k] = c.runs.size();
-                c.runs.push_back(std::move(r));
-                progress = true;
+        expr_ref_vector conj(m);
+        auto body_of = [&](unsigned_vector const& prem) {
+            expr_ref_vector body(m);
+            for (unsigned id : prem) {
+                expr_ref e(m.mk_eq(c.runs[id].lhs, c.runs[id].rhs), m);
+                if (!body.contains(e)) body.push_back(e);
             }
-            // T-runs for premises derivable from T's atoms and the S-conclusions so far
-            for (expr* p : prem_eqs) {
-                if (prem_run.contains(p)) continue;
-                expr* pl = nullptr, * pr = nullptr;
-                VERIFY(m.is_eq(p, pl, pr));
-                cert::run r;
-                r.side_a = !summarize_a;
-                r.lhs = pl; r.rhs = pr;
-                deriver d(m, atoms, r.steps);
-                d.assert_side(!summarize_a);
-                for (unsigned k = 0; k < clauses.size(); ++k)
-                    if (derived_s(k))
-                        d.assert_premise(clause_run[k], clauses[k].lhs, clauses[k].rhs);
-                if (!d.entails(pl, pr)) continue;
-                if (!d.derive(pl, pr)) { c.error = "premise not derivable: " + d.error(); return; }
-                for (unsigned id : d.used_runs()) r.premises.push_back(id);
-                prem_run.insert(p, c.runs.size());
-                c.runs.push_back(std::move(r));
-                progress = true;
-            }
+            return body;
+        };
+        for (unsigned i = 0; i < c.runs.size(); ++i) {
+            auto const& r = c.runs[i];
+            if (!reach[i] || !r.side_a) continue;
+            expr_ref eq(m.mk_eq(r.lhs, r.rhs), m);
+            expr_ref_vector body = body_of(r.premises);
+            expr_ref cl(m);
+            if (body.empty()) cl = eq;
+            else cl = m.mk_implies(body.size() == 1 ? body.get(0) : m.mk_and(body), eq);
+            if (!conj.contains(cl)) conj.push_back(cl);
         }
-        for (unsigned k = 0; k < clauses.size(); ++k)
-            if (!derived_s(k)) { c.error = "summary clause with underivable premises"; return; }
-
-        // final: the conflict side derives the violated disequality's equality
-        {
-            cert::run& r = c.final;
-            r.side_a = diseq_is_a;
-            r.steps.reset(); r.premises.reset();
-            r.lhs = atoms[diseq].lhs; r.rhs = atoms[diseq].rhs;
-            deriver d(m, atoms, r.steps);
-            d.assert_side(diseq_is_a);
-            for (unsigned k = 0; k < clauses.size(); ++k)
-                d.assert_premise(clause_run[k], clauses[k].lhs, clauses[k].rhs);
-            if (!d.derive(r.lhs, r.rhs)) { c.error = "conflict not derivable: " + d.error(); return; }
-            for (unsigned id : d.used_runs()) r.premises.push_back(id);
-        }
-
-        // Interpolant in the Lean shape for the dual case: the A-side runs'
-        // Horn clauses and the negative clause of the final premises.
-        if (diseq_is_a) {
-            expr_ref_vector conj(m);
-            for (auto const& r : c.runs) {
-                if (!r.side_a) continue;
-                expr_ref eq(m.mk_eq(r.lhs, r.rhs), m);
-                if (r.premises.empty()) { conj.push_back(eq); continue; }
-                expr_ref_vector body(m);
-                for (unsigned id : r.premises) body.push_back(m.mk_eq(c.runs[id].lhs, c.runs[id].rhs));
-                conj.push_back(m.mk_implies(body.size() == 1 ? body.get(0) : m.mk_and(body), eq));
-            }
-            expr_ref_vector neg(m);
-            for (unsigned id : c.final.premises) neg.push_back(m.mk_eq(c.runs[id].lhs, c.runs[id].rhs));
+        if (c.conflict_side_a) {
+            expr_ref_vector neg = body_of(c.final.premises);
             if (neg.empty()) conj.push_back(m.mk_false());
             else conj.push_back(m.mk_not(neg.size() == 1 ? neg.get(0) : m.mk_and(neg)));
-            dual_itp = conj.size() == 1 ? expr_ref(conj.get(0), m) : expr_ref(m.mk_and(conj), m);
         }
-        c.ok = true;
+        if (conj.empty()) return expr_ref(m.mk_true(), m);
+        if (conj.size() == 1) return expr_ref(conj.get(0), m);
+        return expr_ref(m.mk_and(conj), m);
     }
 
-    // Certificate of a side that is inconsistent on its own: the final
-    // derivation uses only that side's atoms.
-    static void build_trivial_cert(ast_manager& m, svector<atom> const& atoms, bool side_a, cert& c) {
+    static bool exchange(ast_manager& m, svector<atom> const& atoms,
+                         std::function<ab_mark(func_decl*)> const& sym_mark,
+                         expr_ref_vector& pinned, cert& c, expr_ref& itp) {
         c.ok = false;
         c.runs.reset();
-        c.conflict_side_a = side_a;
-        deriver probe(m, atoms, c.final.steps);
-        probe.assert_side(side_a);
-        for (unsigned i = 0; i < atoms.size(); ++i) {
-            auto const& a = atoms[i];
-            if (!a.is_diseq || !on_side(a, side_a) || !probe.entails(a.lhs, a.rhs))
-                continue;
-            c.diseq_atom = i;
-            c.final.side_a = side_a;
-            c.final.steps.reset(); c.final.premises.reset();
-            c.final.lhs = a.lhs; c.final.rhs = a.rhs;
-            deriver d(m, atoms, c.final.steps);
-            d.assert_side(side_a);
-            if (!d.derive(a.lhs, a.rhs)) { c.error = "trivial conflict not derivable: " + d.error(); return; }
-            c.ok = true;
-            return;
+        c.error.clear();
+        for (auto const& a : atoms)
+            if (a.side != MARK_A && a.side != MARK_B) { c.error = "exchange: atom available to both sides"; return false; }
+
+        std::function<bool(func_decl*)> shared = [&](func_decl* f) { return sym_mark(f) == MARK_AB; };
+        obj_map<expr, bool> shared_memo;
+
+        // pool of shared terms
+        ptr_vector<expr> pool;
+        obj_hashtable<expr> in_pool;
+        std::function<void(expr*)> add_subterms = [&](expr* e) {
+            if (in_pool.contains(e))
+                return;
+            if (is_app(e))
+                for (expr* arg : *to_app(e))
+                    add_subterms(arg);
+            if (is_shared_term(e, shared, shared_memo)) {
+                in_pool.insert(e);
+                pool.push_back(e);
+            }
+        };
+        for (auto const& a : atoms) { add_subterms(a.lhs); add_subterms(a.rhs); }
+
+        vector<announcement> ann;
+        // common knowledge: the closure of all announcements over the pool
+        euf::egraph known(m);
+        unsigned known_pool = 0, known_ann = 0;
+        auto sync_known = [&]() {
+            for (; known_pool < pool.size(); ++known_pool)
+                intern(known, pool[known_pool]);
+            for (; known_ann < ann.size(); ++known_ann) {
+                euf::enode* x = intern(known, ann[known_ann].lhs);
+                euf::enode* y = intern(known, ann[known_ann].rhs);
+                known.merge(x, y, ann[known_ann].lhs);
+            }
+            known.propagate();
+        };
+
+        int diseq = -1;
+        bool conflict_a = false;
+        unsigned const max_rounds = 4 * atoms.size() + 16;
+        for (unsigned round = 0; diseq < 0 && round < max_rounds; ++round) {
+            bool progress = false;
+            for (unsigned k = 0; k < 2 && diseq < 0; ++k) {
+                bool side_a = k == 0;
+                euf::egraph eg(m);
+                for (auto const& a : atoms) { intern(eg, a.lhs); intern(eg, a.rhs); }
+                for (expr* t : pool) intern(eg, t);
+                for (auto const& a : atoms)
+                    if (!a.is_diseq && on_side(a, side_a))
+                        eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
+                for (auto const& an : ann)
+                    eg.merge(intern(eg, an.lhs), intern(eg, an.rhs), an.lhs);
+                eg.propagate();
+
+                // extend the pool: f(a1..an) with f shared and every ai equal to a pool term
+                bool grown = true;
+                while (grown) {
+                    grown = false;
+                    obj_map<euf::enode, expr*> rep;   // root -> first pool term of the class
+                    for (expr* t : pool) {
+                        euf::enode* r = eg.find(t)->get_root();
+                        if (!rep.contains(r))
+                            rep.insert(r, t);
+                    }
+                    ptr_vector<expr> fresh;
+                    unsigned sz = eg.nodes().size();
+                    for (unsigned i = 0; i < sz; ++i) {
+                        euf::enode* n = eg.nodes()[i];
+                        expr* e = n->get_expr();
+                        if (!is_app(e) || to_app(e)->get_num_args() == 0 || in_pool.contains(e))
+                            continue;
+                        func_decl* f = to_app(e)->get_decl();
+                        if (f->get_family_id() != null_family_id || !shared(f))
+                            continue;
+                        ptr_buffer<expr> args;
+                        bool ok = true;
+                        for (unsigned j = 0; ok && j < n->num_args(); ++j) {
+                            expr* r = nullptr;
+                            ok = rep.find(n->get_arg(j)->get_root(), r);
+                            if (ok) args.push_back(r);
+                        }
+                        if (!ok)
+                            continue;
+                        expr_ref t(m.mk_app(f, args.size(), args.data()), m);
+                        if (in_pool.contains(t))
+                            continue;
+                        pinned.push_back(t);
+                        in_pool.insert(t);
+                        pool.push_back(t);
+                        fresh.push_back(t);
+                    }
+                    for (expr* t : fresh) { intern(eg, t); grown = true; }
+                    if (grown) { eg.propagate(); progress = true; }
+                }
+
+                // conflict on this side?
+                for (unsigned i = 0; i < atoms.size(); ++i) {
+                    auto const& a = atoms[i];
+                    if (a.is_diseq && on_side(a, side_a) && eg.find(a.lhs)->get_root() == eg.find(a.rhs)->get_root()) {
+                        diseq = i;
+                        conflict_a = side_a;
+                        break;
+                    }
+                }
+                if (diseq >= 0)
+                    break;
+
+                // announce the shared equalities this side knows and the other does not
+                sync_known();
+                obj_map<euf::enode, expr*> rep;
+                for (expr* t : pool) {
+                    euf::enode* r = eg.find(t)->get_root();
+                    expr* r0 = nullptr;
+                    if (!rep.find(r, r0)) { rep.insert(r, t); continue; }
+                    if (known.find(r0)->get_root() == known.find(t)->get_root())
+                        continue;
+                    ann.push_back({ side_a, r0, t });
+                    sync_known();
+                    progress = true;
+                }
+            }
+            if (!progress)
+                break;
         }
-        c.error = "no violated disequality on the inconsistent side";
+        if (diseq < 0) { c.error = "exchange: no conflict reached"; return false; }
+
+        // Derivations, top-down from the conflict: a derivation on one side may
+        // use the announcements the other side made before it.
+        c.conflict_side_a = conflict_a;
+        c.diseq_atom = diseq;
+        unsigned const FINAL = ann.size();
+        vector<cert::run> runs;
+        runs.resize(ann.size());
+        bool_vector needed(ann.size(), false), built(ann.size(), false);
+        auto build = [&](unsigned id, cert::run& r) -> bool {
+            bool side_a = id == FINAL ? conflict_a : ann[id].side_a;
+            r.side_a = side_a;
+            r.lhs = id == FINAL ? atoms[diseq].lhs : ann[id].lhs;
+            r.rhs = id == FINAL ? atoms[diseq].rhs : ann[id].rhs;
+            r.steps.reset();
+            r.premises.reset();
+            deriver d(m, atoms, r.steps);
+            d.assert_side(side_a);
+            for (unsigned j = 0; j < std::min(id, (unsigned)ann.size()); ++j)
+                if (ann[j].side_a != side_a)
+                    d.assert_premise(j, ann[j].lhs, ann[j].rhs);
+            if (!d.derive(r.lhs, r.rhs)) { c.error = "exchange: derivation failed: " + d.error(); return false; }
+            for (unsigned j : d.used_runs()) {
+                r.premises.push_back(j);
+                needed[j] = true;
+            }
+            return true;
+        };
+        cert::run final;
+        if (!build(FINAL, final))
+            return false;
+        for (unsigned id = ann.size(); id-- > 0; ) {
+            if (!needed[id])
+                continue;
+            if (!build(id, runs[id]))
+                return false;
+            built[id] = true;
+        }
+        // compact the run ids
+        unsigned_vector new_id(ann.size(), UINT_MAX);
+        for (unsigned id = 0; id < ann.size(); ++id)
+            if (built[id]) {
+                new_id[id] = c.runs.size();
+                c.runs.push_back(runs[id]);
+            }
+        auto renumber = [&](cert::run& r) {
+            for (unsigned& q : r.premises) q = new_id[q];
+            for (auto& st : r.steps)
+                if (st.kind == cert::rule::premise)
+                    st.run = new_id[st.run];
+        };
+        for (auto& r : c.runs) renumber(r);
+        renumber(final);
+        c.final = final;
+
+        // the interpolant
+        auto eq_of = [&](unsigned id) { return expr_ref(m.mk_eq(c.runs[id].lhs, c.runs[id].rhs), m); };
+        expr_ref_vector conj(m);
+        for (auto const& r : c.runs) {
+            if (!r.side_a)
+                continue;
+            expr_ref eq(m.mk_eq(r.lhs, r.rhs), m);
+            if (r.premises.empty()) { conj.push_back(eq); continue; }
+            expr_ref_vector body(m);
+            for (unsigned id : r.premises) body.push_back(eq_of(id));
+            conj.push_back(m.mk_implies(body.size() == 1 ? body.get(0) : m.mk_and(body), eq));
+        }
+        if (conflict_a) {
+            expr_ref_vector neg(m);
+            for (unsigned id : c.final.premises) neg.push_back(eq_of(id));
+            if (neg.empty()) conj.push_back(m.mk_false());
+            else conj.push_back(m.mk_not(neg.size() == 1 ? neg.get(0) : m.mk_and(neg)));
+        }
+        if (conj.empty()) itp = m.mk_true();
+        else if (conj.size() == 1) itp = conj.get(0);
+        else itp = m.mk_and(conj);
+        c.ok = true;
+        return true;
     }
+
+    // Whether e mentions shared uninterpreted symbols only.
+    static bool shared_only(expr* e, std::function<ab_mark(func_decl*)> const& sym_mark) {
+        ptr_vector<expr> todo;
+        obj_hashtable<expr> seen;
+        todo.push_back(e);
+        while (!todo.empty()) {
+            expr* t = todo.back();
+            todo.pop_back();
+            if (!is_app(t) || seen.contains(t))
+                continue;
+            seen.insert(t);
+            func_decl* f = to_app(t)->get_decl();
+            if (f->get_family_id() == null_family_id && sym_mark(f) != MARK_AB)
+                return false;
+            for (expr* arg : *to_app(t))
+                todo.push_back(arg);
+        }
+        return true;
+    }
+
+    // ---------------------------------------------------------------------
+    // Directed interpolation.
+    //
+    // One procedure produces both the partial interpolant of a lemma and its
+    // certificate. It follows the proof of the conflict instead of saturating:
+    //
+    //   - All equality atoms are merged into one egraph (the side opposite the
+    //     violated disequality first, so that its edges are preferred). The
+    //     proof-forest path between the two sides of the disequality is the
+    //     proof to interpolate: atom edges belong to side A or B, congruence
+    //     edges belong to nobody and are re-derived through the paths of
+    //     their arguments.
+    //
+    //   - A side S derives an equality x = y along a path by itself: its own
+    //     atoms are assumptions, and a congruence is a congr step over S's
+    //     derivations of the argument equalities ("S owns the congruence").
+    //     A derivation may mention any term; only what crosses between the
+    //     sides is constrained.
+    //
+    //   - What S cannot derive is delegated to the other side O as a run: a
+    //     maximal stretch of the path made of O's atoms and of congruences O
+    //     owns, concluded as an equality L1 = L2 that S uses as a premise.
+    //     O's derivation of the run is built by the same procedure, so it may
+    //     in turn use runs of S as premises (the Horn premises of the run).
+    //
+    //   - The invariant: both ends of a run are shared terms. An end is a
+    //     path node if that term is shared. Otherwise the run ends inside a
+    //     congruence edge f(a1..an) ~ f(b1..bn) with f shared: every argument
+    //     path ai ~ bi is split at a shared term li (recursively, by the same
+    //     rule) such that one side derives ai = li and the other li = bi, and
+    //     the end is the shared term f(l1..ln), which need not occur in the
+    //     lemma. This is the shared representative of a term for a side; it
+    //     replaces the summarizer's boundary rewriting.
+    //
+    //   - Where a run may end in several places the choices are tried in a
+    //     fixed order: O keeps a congruence it can derive without help from
+    //     S; otherwise the run is cut at a shared node when S can own the
+    //     congruence, then inside the congruence, and only then does O own it
+    //     with premises from S. Cutting early keeps clauses small and their
+    //     premises few.
+    //
+    // The certificate is the trace of this construction, and the interpolant
+    // is what the certificate denotes (extract_interpolant). If no shared end
+    // can be found the procedure fails and the caller falls back to the
+    // equality exchange.
+    // ---------------------------------------------------------------------
+
+    namespace {
+        class directed {
+            enum : unsigned {
+                FAIL = UINT_MAX,
+                NONE = UINT_MAX - 1,     // empty derivation (reflexivity at the current term)
+                MAX_WORK = 200000,
+                MAX_DEPTH = 2000
+            };
+
+            struct builder {
+                bool                side_a;
+                svector<cert::step> steps;
+                ptr_vector<expr>    lhs, rhs;    // conclusion of each step
+                // conclusion -> a step deriving it
+                obj_pair_map<expr, expr, unsigned> known;
+                bool_vector         uses_premise;  // per step: does it depend on a run of the other side
+                builder(bool a): side_a(a) {}
+            };
+            struct edge {
+                bool     is_atom;
+                unsigned atom;
+            };
+            struct path {
+                ptr_vector<euf::enode> nodes;
+                svector<edge>          edges;   // edges[i] connects nodes[i] and nodes[i+1]
+            };
+
+            ast_manager&            m;
+            svector<atom> const&    m_atoms;
+            bool_vector const&      m_side;      // per atom: does it belong to side A
+            std::function<ab_mark(func_decl*)> const& m_sym_mark;
+            expr_ref_vector&        m_pinned;
+            cert&                   c;
+            euf::egraph             eg;
+            unsigned_vector         m_idx;       // m_idx[i] == i; addresses serve as justifications
+            obj_map<expr, bool>     m_shared;
+            unsigned                m_work = 0;
+            unsigned                m_depth = 0;
+            // One derivation store per side for the whole lemma: a derived
+            // equality is reused wherever that side needs it again, in any run.
+            // A run is a root step in its side's store; its own step list is
+            // extracted when the run is closed. Steps of attempts that are
+            // abandoned stay in the store; they are valid and never extracted.
+            builder                 m_store[2] = { builder(false), builder(true) };
+            // (side, lhs, rhs) -> id of a run concluding it
+            obj_pair_map<expr, expr, unsigned> m_run_of[2];
+            bool                    m_bad = false;   // internal inconsistency: give up
+            // What a side cannot derive (index 1: side A) / own does not depend
+            // on the builder, so failures are remembered.
+            obj_pair_hashtable<expr, expr> m_no_derive[2], m_no_own[2];
+            std::string             m_error;
+
+            void bad(char const* msg) { if (!m_bad) m_error = msg; m_bad = true; }
+
+            euf::enode* intern(expr* e) {
+                if (euf::enode* n = eg.find(e))
+                    return n;
+                ptr_vector<euf::enode> args;
+                if (is_app(e))
+                    for (expr* a : *to_app(e))
+                        args.push_back(intern(a));
+                return eg.mk(e, 0, args.size(), args.data());
+            }
+
+            bool shared(expr* e) {
+                bool r;
+                if (m_shared.find(e, r))
+                    return r;
+                r = is_app(e);
+                if (r) {
+                    func_decl* f = to_app(e)->get_decl();
+                    if (f->get_family_id() == null_family_id && m_sym_mark(f) != MARK_AB)
+                        r = false;
+                    for (expr* arg : *to_app(e))
+                        if (r && !shared(arg))
+                            r = false;
+                }
+                m_shared.insert(e, r);
+                return r;
+            }
+
+            // ---- steps ---------------------------------------------------
+
+            unsigned push(builder& b, cert::step const& st, expr* l, expr* r) {
+                b.steps.push_back(st);
+                b.lhs.push_back(l);
+                b.rhs.push_back(r);
+                b.known.insert(l, r, b.steps.size() - 1);
+                bool dep = false;
+                switch (st.kind) {
+                case cert::rule::premise: dep = true; break;
+                case cert::rule::symm: dep = b.uses_premise[st.first]; break;
+                case cert::rule::trans: dep = b.uses_premise[st.first] || b.uses_premise[st.second]; break;
+                case cert::rule::congr: for (unsigned a : st.args) dep |= b.uses_premise[a]; break;
+                default: break;
+                }
+                b.uses_premise.push_back(dep);
+                return b.steps.size() - 1;
+            }
+            // a step of b already deriving l = r, or FAIL
+            unsigned lookup(builder& b, expr* l, expr* r) {
+                unsigned i;
+                return b.known.find(l, r, i) ? i : FAIL;
+            }
+            unsigned refl(builder& b, expr* t) {
+                cert::step st; st.kind = cert::rule::refl; st.term = t;
+                return push(b, st, t, t);
+            }
+            unsigned assume(builder& b, unsigned i) {
+                cert::step st; st.kind = cert::rule::assumption; st.atom = i;
+                return push(b, st, m_atoms[i].lhs, m_atoms[i].rhs);
+            }
+            unsigned prem(builder& b, unsigned id) {
+                cert::step st; st.kind = cert::rule::premise; st.run = id;
+                return push(b, st, c.runs[id].lhs, c.runs[id].rhs);
+            }
+            unsigned symm(builder& b, unsigned s) {
+                cert::step st; st.kind = cert::rule::symm; st.first = s;
+                return push(b, st, b.rhs[s], b.lhs[s]);
+            }
+            unsigned trans(builder& b, unsigned s1, unsigned s2) {
+                if (b.rhs[s1] != b.lhs[s2]) { bad("transitivity over different middle terms"); return s1; }
+                cert::step st; st.kind = cert::rule::trans; st.first = s1; st.second = s2;
+                return push(b, st, b.lhs[s1], b.rhs[s2]);
+            }
+            // concatenation of two derivations, either of which may be empty
+            unsigned cat(builder& b, unsigned acc, unsigned s) {
+                if (acc == NONE) return s;
+                if (s == NONE) return acc;
+                return trans(b, acc, s);
+            }
+            unsigned oriented(builder& b, unsigned s, expr* from, expr* to) {
+                if (b.lhs[s] == from && b.rhs[s] == to) return s;
+                if (b.lhs[s] == to && b.rhs[s] == from) return symm(b, s);
+                bad("edge justification does not match its endpoints");
+                return s;
+            }
+            unsigned congr(builder& b, func_decl* f, unsigned_vector const& args) {
+                ptr_buffer<expr> ls, rs;
+                for (unsigned a : args) { ls.push_back(b.lhs[a]); rs.push_back(b.rhs[a]); }
+                expr* l = m.mk_app(f, ls.size(), ls.data());
+                m_pinned.push_back(l);
+                expr* r = m.mk_app(f, rs.size(), rs.data());
+                m_pinned.push_back(r);
+                cert::step st; st.kind = cert::rule::congr; st.f = f; st.args.append(args);
+                return push(b, st, l, r);
+            }
+
+            // Keep the steps the root depends on, renumbered; collect the runs used.
+            void prune(builder const& b, unsigned root, svector<cert::step>& out, unsigned_vector& premises) {
+                bool_vector need(b.steps.size(), false);
+                need[root] = true;
+                for (unsigned i = root + 1; i-- > 0; ) {
+                    if (!need[i]) continue;
+                    cert::step const& st = b.steps[i];
+                    switch (st.kind) {
+                    case cert::rule::symm: need[st.first] = true; break;
+                    case cert::rule::trans: need[st.first] = true; need[st.second] = true; break;
+                    case cert::rule::congr: for (unsigned a : st.args) need[a] = true; break;
+                    default: break;
+                    }
+                }
+                unsigned_vector ren(b.steps.size(), UINT_MAX);
+                uint_set seen;
+                for (unsigned i = 0; i <= root; ++i) {
+                    if (!need[i]) continue;
+                    cert::step st = b.steps[i];
+                    switch (st.kind) {
+                    case cert::rule::symm: st.first = ren[st.first]; break;
+                    case cert::rule::trans: st.first = ren[st.first]; st.second = ren[st.second]; break;
+                    case cert::rule::congr: for (unsigned& a : st.args) a = ren[a]; break;
+                    case cert::rule::premise:
+                        if (!seen.contains(st.run)) { seen.insert(st.run); premises.push_back(st.run); }
+                        break;
+                    default: break;
+                    }
+                    ren[i] = out.size();
+                    out.push_back(st);
+                }
+            }
+
+            // Close a run of side b.side_a concluding l = r; returns its id.
+            unsigned finish(builder& b, unsigned root, expr* l, expr* r) {
+                unsigned id;
+                if (m_run_of[b.side_a].find(l, r, id))
+                    return id;
+                root = oriented(b, root, l, r);
+                if (m_bad) return FAIL;
+                cert::run run;
+                run.side_a = b.side_a;
+                run.lhs = l;
+                run.rhs = r;
+                prune(b, root, run.steps, run.premises);
+                m_pinned.push_back(l);
+                m_pinned.push_back(r);
+                c.runs.push_back(run);
+                m_run_of[b.side_a].insert(l, r, c.runs.size() - 1);
+                return c.runs.size() - 1;
+            }
+
+            // ---- paths ---------------------------------------------------
+
+            bool edge_of(euf::enode* n, edge& e) {
+                euf::justification j = n->get_justification();
+                euf::enode* t = n->get_target();
+                if (j.is_external()) {
+                    e.is_atom = true;
+                    e.atom = *j.ext<unsigned>();
+                    return true;
+                }
+                if (j.is_congruence() && !j.is_commutative() && n->get_decl() && n->get_decl() == t->get_decl() && n->num_args() == t->num_args()) {
+                    e.is_atom = false;
+                    e.atom = UINT_MAX;
+                    return true;
+                }
+                return false;
+            }
+
+            bool get_path(euf::enode* x, euf::enode* y, path& p) {
+                obj_hashtable<euf::enode> up;
+                for (euf::enode* n = x; n; n = n->get_target())
+                    up.insert(n);
+                euf::enode* l = y;
+                while (l && !up.contains(l))
+                    l = l->get_target();
+                if (!l)
+                    return false;
+                edge e;
+                for (euf::enode* n = x; n != l; n = n->get_target()) {
+                    if (!edge_of(n, e)) return false;
+                    p.nodes.push_back(n);
+                    p.edges.push_back(e);
+                }
+                p.nodes.push_back(l);
+                ptr_vector<euf::enode> down;
+                for (euf::enode* n = y; n != l; n = n->get_target())
+                    down.push_back(n);
+                for (unsigned i = down.size(); i-- > 0; ) {
+                    if (!edge_of(down[i], e)) return false;
+                    p.edges.push_back(e);
+                    p.nodes.push_back(down[i]);
+                }
+                return true;
+            }
+
+            // ---- derivations ---------------------------------------------
+
+            // b's side owns the congruence w ~ u: congr over its derivations of the arguments.
+            unsigned own(builder& b, euf::enode* w, euf::enode* u) {
+                unsigned known = lookup(b, w->get_expr(), u->get_expr());
+                if (known != FAIL)
+                    return known;
+                if (m_no_own[b.side_a].contains(std::make_pair(w->get_expr(), u->get_expr())))
+                    return FAIL;
+                unsigned r = own_core(b, w, u);
+                if (r == FAIL && !m_bad)
+                    m_no_own[b.side_a].insert(std::make_pair(w->get_expr(), u->get_expr()));
+                return r;
+            }
+
+            unsigned own_core(builder& b, euf::enode* w, euf::enode* u) {
+                unsigned_vector args;
+                for (unsigned i = 0; i < w->num_args(); ++i) {
+                    euf::enode* x = w->get_arg(i), * y = u->get_arg(i);
+                    unsigned s;
+                    if (x == y)
+                        s = refl(b, x->get_expr());
+                    else {
+                        path q;
+                        if (!get_path(x, y, q)) return FAIL;
+                        s = derive(b, q, 0, q.nodes.size() - 1);
+                    }
+                    if (s == FAIL) return FAIL;
+                    args.push_back(s);
+                }
+                return congr(b, w->get_decl(), args);
+            }
+
+            // End a run inside the congruence w ~ u: a shared term L = f(l1..ln)
+            // with x deriving w = L (step sx) and y deriving L = u (step sy).
+            bool cut(builder& x, builder& y, euf::enode* w, euf::enode* u, expr*& L, unsigned& sx, unsigned& sy) {
+                func_decl* f = w->get_decl();
+                if (f->get_family_id() == null_family_id && m_sym_mark(f) != MARK_AB)
+                    return false;
+                ptr_buffer<expr> ls;
+                unsigned_vector ax, ay;
+                for (unsigned i = 0; i < w->num_args(); ++i) {
+                    euf::enode* p = w->get_arg(i), * q = u->get_arg(i);
+                    expr* l = nullptr;
+                    unsigned a = FAIL, b = FAIL;
+                    if (p == q) {
+                        l = p->get_expr();
+                        if (!shared(l)) return false;
+                        a = refl(x, l);
+                        b = refl(y, l);
+                    }
+                    else {
+                        path pq;
+                        if (!get_path(p, q, pq)) return false;
+                        if (!split(x, y, pq, l, a, b)) return false;
+                    }
+                    ls.push_back(l);
+                    ax.push_back(a);
+                    ay.push_back(b);
+                }
+                L = m.mk_app(f, ls.size(), ls.data());
+                m_pinned.push_back(L);
+                sx = congr(x, f, ax);
+                sy = congr(y, f, ay);
+                return !m_bad;
+            }
+
+            // Split the path Q between x (coming from its start) and y (coming from
+            // its end) at a shared term l: x derives Q.start = l, y derives l = Q.end.
+            bool split(builder& x, builder& y, path const& Q, expr*& l, unsigned& sx, unsigned& sy) {
+                unsigned n = Q.nodes.size() - 1;
+                // the natural place is where y's atoms begin
+                unsigned a = n;
+                for (unsigned i = 0; i < n; ++i)
+                    if (Q.edges[i].is_atom && m_side[Q.edges[i].atom] == y.side_a) { a = i; break; }
+                unsigned_vector order;
+                for (unsigned t = a + 1; t-- > 0; ) order.push_back(t);
+                for (unsigned t = a + 1; t <= n; ++t) order.push_back(t);
+                for (unsigned t : order) {
+                    expr* e = Q.nodes[t]->get_expr();
+                    if (!shared(e)) continue;
+                    unsigned s1 = derive(x, Q, 0, t);
+                    unsigned s2 = s1 == FAIL ? FAIL : derive(y, Q, t, n);
+                    if (s1 != FAIL && s2 != FAIL) { l = e; sx = s1; sy = s2; return true; }
+                    if (m_bad) return false;
+                }
+                // no shared node works: split inside a congruence edge
+                for (unsigned t : order) {
+                    if (t == n || Q.edges[t].is_atom) continue;
+                    unsigned s1 = derive(x, Q, 0, t);
+                    expr* L = nullptr;
+                    unsigned cx = FAIL, cy = FAIL;
+                    if (s1 != FAIL && cut(x, y, Q.nodes[t], Q.nodes[t + 1], L, cx, cy)) {
+                        unsigned s2 = derive(y, Q, t + 1, n);
+                        if (s2 != FAIL) { l = L; sx = trans(x, s1, cx); sy = trans(y, cy, s2); return !m_bad; }
+                    }
+                    if (m_bad) return false;
+                }
+                return false;
+            }
+
+            // b's side derives P.nodes[lo] = P.nodes[hi]. Returns the step, or FAIL.
+            unsigned derive(builder& b, path const& P, unsigned lo, unsigned hi) {
+                expr* l = P.nodes[lo]->get_expr(), * r = P.nodes[hi]->get_expr();
+                unsigned known = lookup(b, l, r);
+                if (known != FAIL)
+                    return known;
+                if (m_no_derive[b.side_a].contains(std::make_pair(l, r)))
+                    return FAIL;
+                unsigned s = derive_core(b, P, lo, hi);
+                if (s == FAIL && !m_bad)
+                    m_no_derive[b.side_a].insert(std::make_pair(l, r));
+                return s;
+            }
+
+            unsigned derive_core(builder& b, path const& P, unsigned lo, unsigned hi) {
+                if (m_bad)
+                    return FAIL;
+                if (++m_work > MAX_WORK || m_depth > MAX_DEPTH) {
+                    bad(m_work > MAX_WORK ? "work limit reached" : "depth limit reached");
+                    return FAIL;
+                }
+                flet<unsigned> _depth(m_depth, m_depth + 1);
+                bool S = b.side_a;
+                auto ex = [&](unsigned t) { return P.nodes[t]->get_expr(); };
+                auto atom_of = [&](unsigned t, bool side) { return P.edges[t].is_atom && m_side[P.edges[t].atom] == side; };
+                auto is_congr = [&](unsigned t) { return !P.edges[t].is_atom; };
+                unsigned_vector acc_at;                       // acc_at[t - lo]: derivation of nodes[lo] = nodes[t]
+                acc_at.resize(hi - lo + 1, NONE);
+                auto at = [&](unsigned t) -> unsigned& { return acc_at[t - lo]; };
+
+                unsigned t = lo;
+                while (t < hi) {
+                    if (atom_of(t, S)) {
+                        unsigned s = oriented(b, assume(b, P.edges[t].atom), ex(t), ex(t + 1));
+                        at(t + 1) = cat(b, at(t), s);
+                        ++t;
+                        continue;
+                    }
+                    if (is_congr(t)) {
+                        unsigned s = own(b, P.nodes[t], P.nodes[t + 1]);
+                        if (s != FAIL) {
+                            at(t + 1) = cat(b, at(t), s);
+                            ++t;
+                            continue;
+                        }
+                        if (m_bad) return FAIL;
+                    }
+
+                    // ---- a run of the other side starts here ----
+                    builder& R = m_store[!S];
+                    expr* L1 = nullptr, * L2 = nullptr, * L = nullptr;
+                    unsigned sS = NONE;      // b's derivation of nodes[lo] = L1
+                    unsigned racc = NONE;    // R's derivation of L1 = nodes[cur]
+                    unsigned cur = t;
+                    bool started = false;
+                    unsigned sx = FAIL, sy = FAIL;
+
+                    // left end of the run
+                    if (is_congr(t)) {
+                        if (cut(b, R, P.nodes[t], P.nodes[t + 1], L, sx, sy)) {
+                            L1 = L; sS = cat(b, at(t), sx); racc = sy; cur = t + 1; started = true;
+                        }
+                        else {
+                        }
+                        if (!started && !m_bad && shared(ex(t))) {
+                            unsigned s = own(R, P.nodes[t], P.nodes[t + 1]);
+                            if (s != FAIL) { L1 = ex(t); sS = at(t); racc = s; cur = t + 1; started = true; }
+                            
+                        }
+                    }
+                    else if (shared(ex(t))) {
+                        L1 = ex(t); sS = at(t); cur = t; started = true;
+                    }
+                    // the term here is not shared: the run starts further left,
+                    // inside or before a congruence b's side owned so far
+                    for (unsigned k = t; !started && !m_bad && k-- > lo && is_congr(k); ) {
+                        if (cut(b, R, P.nodes[k], P.nodes[k + 1], L, sx, sy)) {
+                            unsigned s2 = derive(R, P, k + 1, t);
+                            if (s2 != FAIL) { L1 = L; sS = cat(b, at(k), sx); racc = trans(R, sy, s2); cur = t; started = true; break; }
+                        }
+                        if (shared(ex(k))) {
+                            unsigned s2 = derive(R, P, k, t);
+                            if (s2 != FAIL) { L1 = ex(k); sS = at(k); racc = s2; cur = t; started = true; break; }
+                        }
+                    }
+                    if (!started || m_bad)
+                        return FAIL;
+
+                    // extend the run and find its right end
+                    unsigned sStub = NONE;       // b's derivation of L2 = nodes[next]
+                    unsigned next = cur;
+                    bool last_congr = false;     // the last edge R consumed is a congruence it owns
+                    unsigned last_racc = NONE;
+                    while (true) {
+                        if (cur == hi || atom_of(cur, S)) {
+                            if (shared(ex(cur))) { L2 = ex(cur); next = cur; break; }
+                            // must end here but cannot: end inside the congruence just consumed
+                            if (!last_congr) return FAIL;
+                            racc = last_racc;
+                            if (!cut(R, b, P.nodes[cur - 1], P.nodes[cur], L, sx, sy)) return FAIL;
+                            racc = cat(R, racc, sx); sStub = sy; L2 = L; next = cur;
+                            break;
+                        }
+                        if (atom_of(cur, !S)) {
+                            unsigned s = oriented(R, assume(R, P.edges[cur].atom), ex(cur), ex(cur + 1));
+                            racc = cat(R, racc, s);
+                            last_congr = false;
+                            ++cur;
+                            continue;
+                        }
+                        // a congruence
+                        unsigned s = own(R, P.nodes[cur], P.nodes[cur + 1]);
+                        bool own_ok = s != FAIL;
+                        if (own_ok && !R.uses_premise[s]) {          // derived without help
+                            last_congr = true; last_racc = racc;
+                            racc = cat(R, racc, s);
+                            ++cur;
+                            continue;
+                        }
+                        if (m_bad) return FAIL;
+                        // end at this node if it is shared and b's side can take over
+                        if (shared(ex(cur))) {
+                            unsigned s2 = own(b, P.nodes[cur], P.nodes[cur + 1]);
+                            if (m_bad) return FAIL;
+                            if (s2 != FAIL) { L2 = ex(cur); next = cur; break; }
+                        }
+                        // end inside the congruence
+                        {
+                            if (cut(R, b, P.nodes[cur], P.nodes[cur + 1], L, sx, sy)) {
+                                racc = cat(R, racc, sx); sStub = sy; L2 = L; next = cur + 1;
+                                break;
+                            }
+                            if (m_bad) return FAIL;
+                        }
+                        // the run passes through, with premises from b's side
+                        if (!own_ok) return FAIL;
+                        last_congr = true; last_racc = racc;
+                        racc = cat(R, racc, s);
+                        ++cur;
+                    }
+                    if (m_bad) return FAIL;
+
+                    unsigned accn = sS;
+                    if (racc == NONE) {
+                        if (L1 != L2) return FAIL;
+                    }
+                    else if (L1 != L2) {
+                        unsigned id = finish(R, racc, L1, L2);
+                        if (id == FAIL) return FAIL;
+                        accn = cat(b, accn, prem(b, id));
+                    }
+                    accn = cat(b, accn, sStub);
+                    if (next <= t && accn == at(t)) return FAIL;     // no progress
+                    at(next) = accn;
+                    t = next;
+                }
+                if (m_bad) return FAIL;
+                unsigned r = at(hi);
+                return r == NONE ? refl(b, ex(lo)) : r;
+            }
+
+            // Drop runs the final derivation does not depend on, renumbering the rest.
+            void compact() {
+                bool_vector reach(c.runs.size(), false);
+                unsigned_vector todo;
+                todo.append(c.final.premises);
+                while (!todo.empty()) {
+                    unsigned id = todo.back();
+                    todo.pop_back();
+                    if (reach[id]) continue;
+                    reach[id] = true;
+                    todo.append(c.runs[id].premises);
+                }
+                unsigned_vector ren(c.runs.size(), UINT_MAX);
+                svector<cert::run> kept;
+                for (unsigned i = 0; i < c.runs.size(); ++i)
+                    if (reach[i]) { ren[i] = kept.size(); kept.push_back(c.runs[i]); }
+                auto fix = [&](cert::run& r) {
+                    for (unsigned& p : r.premises) p = ren[p];
+                    for (auto& st : r.steps)
+                        if (st.kind == cert::rule::premise) st.run = ren[st.run];
+                };
+                for (auto& r : kept) fix(r);
+                fix(c.final);
+                c.runs.reset();
+                c.runs.append(kept);
+            }
+
+        public:
+            // `use[i]` selects the atoms taking part; equalities of side
+            // `first_a` are merged first.
+            directed(ast_manager& m, svector<atom> const& atoms, bool_vector const& side, bool_vector const& use,
+                     bool first_a, std::function<ab_mark(func_decl*)> const& sym_mark, expr_ref_vector& pinned, cert& c):
+                m(m), m_atoms(atoms), m_side(side), m_sym_mark(sym_mark), m_pinned(pinned), c(c), eg(m) {
+                for (unsigned i = 0; i < atoms.size(); ++i)
+                    m_idx.push_back(i);
+                for (auto const& a : atoms) { intern(a.lhs); intern(a.rhs); }
+                for (unsigned phase = 0; phase < 2; ++phase) {
+                    for (unsigned i = 0; i < atoms.size(); ++i) {
+                        auto const& a = atoms[i];
+                        if (!use[i] || a.is_diseq || a.lhs == a.rhs || (side[i] == first_a) != (phase == 0))
+                            continue;
+                        eg.merge(eg.find(a.lhs), eg.find(a.rhs), &m_idx[i]);
+                    }
+                    eg.propagate();
+                }
+            }
+
+            bool violated(unsigned i) {
+                return eg.find(m_atoms[i].lhs)->get_root() == eg.find(m_atoms[i].rhs)->get_root();
+            }
+
+            // Build the certificate of the conflict on disequality `diseq`.
+            bool run(unsigned diseq) {
+                c.ok = false;
+                c.runs.reset();
+                c.error.clear();
+                bool conflict_a = m_side[diseq];
+                builder& F = m_store[conflict_a];
+                euf::enode* s = eg.find(m_atoms[diseq].lhs), * t = eg.find(m_atoms[diseq].rhs);
+                unsigned root;
+                if (s == t)
+                    root = refl(F, s->get_expr());
+                else {
+                    path p;
+                    if (!get_path(s, t, p)) { c.error = "unsupported justification in the proof forest"; return false; }
+                    root = derive(F, p, 0, p.nodes.size() - 1);
+                }
+                if (root == FAIL || m_bad) {
+                    c.error = m_bad ? m_error : "no shared end for a run";
+                    c.runs.reset();
+                    return false;
+                }
+                root = oriented(F, root, m_atoms[diseq].lhs, m_atoms[diseq].rhs);
+                c.conflict_side_a = conflict_a;
+                c.diseq_atom = diseq;
+                c.final.side_a = conflict_a;
+                c.final.lhs = m_atoms[diseq].lhs;
+                c.final.rhs = m_atoms[diseq].rhs;
+                c.final.steps.reset();
+                c.final.premises.reset();
+                prune(F, root, c.final.steps, c.final.premises);
+                compact();
+                c.ok = !m_bad;
+                return c.ok;
+            }
+        };
+    }
+
 
     expr_ref euf_interpolator::interpolate(svector<atom> const& atoms, std::function<ab_mark(func_decl*)> const& sym_mark, cert* c) {
         expr_ref null(m);
+        cert local;
+        cert& cc = c ? *c : local;
+        cc.ok = false;
         bool has_a = false, has_b = false;
         for (auto const& a : atoms) { has_a |= a.side != MARK_B; has_b |= a.side != MARK_A; }
+        bool_vector side, use;
 
-        auto mk_conj = [&](expr_ref_vector const& v) -> expr_ref {
-            if (v.empty())  return expr_ref(m.mk_true(), m);
-            if (v.size() == 1) return expr_ref(v.get(0), m);
-            return expr_ref(m.mk_and(v), m);
-        };
-
-        // Trivial cases.
-        if (has_b && side_unsat(m, atoms, false)) {
-            if (c) build_trivial_cert(m, atoms, false, *c);
-            return expr_ref(m.mk_true(), m);
-        }
-        if (has_a && side_unsat(m, atoms, true)) {
-            if (c) build_trivial_cert(m, atoms, true, *c);
-            return expr_ref(m.mk_false(), m);
+        // One side is inconsistent on its own: the interpolant is true (B) or
+        // false (A), certified by that side's derivation of its conflict.
+        for (unsigned k = 0; k < 2; ++k) {
+            bool side_a = k == 1;
+            if (!(side_a ? has_a : has_b) || !side_unsat(m, atoms, side_a))
+                continue;
+            side.reset();
+            use.reset();
+            for (auto const& a : atoms) { side.push_back(side_a); use.push_back(on_side(a, side_a)); }
+            directed d(m, atoms, side, use, side_a, sym_mark, m_pinned, cc);
+            for (unsigned i = 0; i < atoms.size(); ++i)
+                if (use[i] && atoms[i].is_diseq && d.violated(i)) {
+                    d.run(i);
+                    break;
+                }
+            return expr_ref(side_a ? m.mk_false() : m.mk_true(), m);
         }
 
         // Locate the disequality the (mixed) conflict violates, and which side it is on.
@@ -442,9 +1251,8 @@ namespace sat {
                 auto const& a = atoms[i];
                 if (a.is_diseq && eg.find(a.lhs)->get_root() == eg.find(a.rhs)->get_root()) {
                     diseq_idx = i;
-                    // A gamma disequality is available to both sides; treat it
-                    // like a beta one (summarize A, no negation) - the gamma
-                    // conjunct is present in the J & beta & gamma obligation.
+                    // A gamma disequality is available to both sides; it is
+                    // treated as a beta one.
                     diseq_is_a = a.side == MARK_A;
                     break;
                 }
@@ -453,108 +1261,48 @@ namespace sat {
         if (diseq_idx < 0)
             return null;
 
-        // Summarize the side opposite the violated disequality: a B-side conflict
-        // is interpolated by A's contribution, an A-side conflict by B's.
-        bool summarize_a = !diseq_is_a;
-
-        // Merge the summarized side first (marked) and close it under
-        // congruence before touching the other side. This makes the proof
-        // forest maximally colored for the summarized side: any equality that
-        // side entails is derived - and marked - in the first phase, so a
-        // later other-side merge never usurps a derivation the summarized
-        // side could provide (the union-find never re-connects an already
-        // connected pair). This is the egraph analogue of colored BCP.
-        euf::egraph eg(m);
-        for (auto const& a : atoms) { intern(eg, a.lhs); intern(eg, a.rhs); }
-        eg.set_mark_justifications(true);
-        for (auto const& a : atoms)
-            if (!a.is_diseq && on_side(a, summarize_a))
-                eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
-        eg.propagate();
-        eg.set_mark_justifications(false);
-        for (auto const& a : atoms)
-            if (!a.is_diseq && !on_side(a, summarize_a))
-                eg.merge(eg.find(a.lhs), eg.find(a.rhs), a.lhs);
-        eg.propagate();
-
-        auto const& d = atoms[diseq_idx];
-        euf::enode* s = eg.find(d.lhs);
-        euf::enode* t = eg.find(d.rhs);
-        if (s->get_root() != t->get_root())
-            return null;
-
-        // A symbol is usable in the summarized side if it is shared or local to
-        // that side (i.e. not local to the opposite side).
-        std::function<bool(func_decl*)> sym_colorable = [&](func_decl* f) {
-            ab_mark mk = sym_mark(f);
-            return summarize_a ? (mk != MARK_B) : (mk != MARK_A);
-        };
-        // A symbol may occur in the interpolant only if it is shared. Symbols
-        // are colored from the original input clauses, so an unmarked symbol
-        // occurs in no input clause at all (solver-introduced); it is usable by
-        // either side but must never be emitted, i.e. it is not shared.
-        std::function<bool(func_decl*)> sym_shared = [&](func_decl* f) {
-            ab_mark mk = sym_mark(f);
-            if (mk == MARK_NONE)
-                IF_VERBOSE(2, verbose_stream() << "itp: symbol " << f->get_name() << " has no A/B mark; treating as not shared\n");
-            return mk == MARK_AB;
-        };
-
-        // Purification oracle: a separate closure of the summarized side alone
-        // (over the full term universe). The summarizer uses it to re-mark
-        // other-side path segments whose endpoint equality the summarized side
-        // already entails, fusing summarized runs (proof reordering for EUF).
-        //
-        // With the summarize-side-first merge order above this is provably a
-        // no-op: an equality entailed by the summarized side alone is already
-        // derived in the first phase, so the (acyclic) proof forest connects
-        // its endpoints through phase-1 edges only - marked inputs, or
-        // congruences that summarize_congr re-derives and marks itself. The
-        // pass is kept as an executable statement of that invariant: if a
-        // future change (merge order, justification marking, non-minimal
-        // lemma explanations) breaks it, purification becomes live and
-        // reports at verbosity 2 instead of silently degrading interpolants.
-        euf::egraph eg_s(m);
-        for (auto const& a : atoms) { intern(eg_s, a.lhs); intern(eg_s, a.rhs); }
-        for (auto const& a : atoms)
-            if (!a.is_diseq && on_side(a, summarize_a))
-                eg_s.merge(eg_s.find(a.lhs), eg_s.find(a.rhs), a.lhs);
-        eg_s.propagate();
-        auto side_entails = [&](expr* x, expr* y) {
-            euf::enode* nx = eg_s.find(x);
-            euf::enode* ny = eg_s.find(y);
-            return nx && ny && nx->get_root() == ny->get_root();
-        };
-
-        expr_ref_vector sum(m);
-        euf::euf_summarizer summ(eg, sum, sym_colorable, sym_shared);
-        summ.set_side_entails(side_entails);
-        summ.sum_eq(s, t);
-        IF_VERBOSE(2, if (summ.num_purified())
-                          verbose_stream() << "itp: euf purification fused " << summ.num_purified() << " segment(s)\n");
-        expr_ref J = mk_conj(sum);
-
-        // Itp(A,B): summary of A for a B-side conflict. For an A-side conflict
-        // the interpolant is built from the exchange structure in the shape of
-        // the Lean extraction (A-run Horn clauses and the negative clause of
-        // the premises of A's final derivation); this coincides with the
-        // negated B summary when B contributes a single run and is a valid
-        // interpolant in general, so it also serves as the certified value.
-        if (diseq_is_a) {
-            cert local;
-            cert& cc = c ? *c : local;
-            expr_ref dual(m);
-            build_cert(m, atoms, true, diseq_idx, sum, cc, dual);
-            if (cc.ok)
-                return dual;
-            IF_VERBOSE(1, verbose_stream() << "itp: dual-case certificate failed (" << cc.error << "); using negated summary\n");
-            return expr_ref(m.mk_not(J), m);
+        // Gamma atoms (label ab) are available to both sides. The labeled
+        // T-lemma obligations, alpha & gamma |= J and J & beta & gamma unsat,
+        // hold for any assignment of the gamma equalities to one side; they
+        // go to the side opposite the conflict, the one whose runs make up
+        // the interpolant, which gives the longest runs.
+        side.reset();
+        use.reset();
+        for (auto const& a : atoms) {
+            side.push_back(a.side == MARK_A || (a.side == MARK_AB && !a.is_diseq && !diseq_is_a));
+            use.push_back(true);
         }
-        if (c) {
-            expr_ref unused(m);
-            build_cert(m, atoms, false, diseq_idx, sum, *c, unused);
+        {
+            directed d(m, atoms, side, use, !diseq_is_a, sym_mark, m_pinned, cc);
+            if (d.run(diseq_idx)) {
+                expr_ref result = extract_interpolant(m, cc);
+                if (shared_only(result, sym_mark))
+                    return result;
+                cc.error = "non-shared symbol in the interpolant";
+            }
         }
-        return J;
+
+        // Last resort. The directed procedure found no shared end for some
+        // run; saturate instead. This is not expected to happen: the lemma is
+        // printed at verbosity 2 so the missing case can be added.
+        IF_VERBOSE(2, {
+            verbose_stream() << "itp: directed interpolation failed (" << cc.error << "), using equality exchange\n";
+            for (auto const& a : atoms)
+                verbose_stream() << "  " << (a.side == MARK_A ? "A " : a.side == MARK_B ? "B " : "AB ")
+                                 << mk_pp(a.lhs, m) << (a.is_diseq ? " != " : " = ") << mk_pp(a.rhs, m) << "\n";
+        });
+        ++m_num_exchange;
+        expr_ref ex(m);
+        if (exchange(m, atoms, sym_mark, m_pinned, cc, ex)) {
+            expr_ref denoted = extract_interpolant(m, cc);
+            if (shared_only(denoted, sym_mark))
+                return denoted;
+            return ex;
+        }
+        IF_VERBOSE(0, verbose_stream() << "itp: equality exchange failed (" << cc.error << "); the lemma has no partial interpolant\n");
+        cc.ok = false;
+        return null;
     }
+
 
 }

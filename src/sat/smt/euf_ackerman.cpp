@@ -93,6 +93,16 @@ namespace euf {
     }
 
     bool ackerman::enable_cc(app* a, app* b) {
+        // The axiom introduces the atoms a = b and ai = bi; under
+        // interpolation they must not mix A-local and B-local symbols.
+        expr* ab[2] = { a, b };
+        if (!ctx.itp_colorable(2, ab))
+            return false;
+        // For Boolean terms (equality atoms used as terms) the axiom would
+        // introduce an atom "a <=> b" defined by Tseitin clauses, which are
+        // neither input clauses nor EUF lemmas and have no partial interpolant.
+        if (ctx.itp_mode() && ctx.get_manager().is_bool(a))
+            return false;
         if (!ctx.enable_ackerman_axioms(a))
             return false;
         if (!ctx.enable_ackerman_axioms(b))
@@ -107,6 +117,11 @@ namespace euf {
     }
 
     bool ackerman::enable_eq(expr* a, expr* b, expr* c) {
+        expr* abc[3] = { a, b, c };
+        if (!ctx.itp_colorable(3, abc))
+            return false;
+        if (ctx.itp_mode() && ctx.get_manager().is_bool(a))
+            return false;
         return ctx.enable_ackerman_axioms(a) && 
             ctx.enable_ackerman_axioms(b) && 
             ctx.enable_ackerman_axioms(c);           

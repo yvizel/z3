@@ -1002,7 +1002,17 @@ private:
             if (!any)
                 continue;
             if (e) e->set_itp_group(grp);
-            res = internalize_goal(g);
+            {
+                // Internalize the group as given, without the preprocessing
+                // tactic (simplify + propagate-values). Preprocessing rewrites
+                // input clauses with the units of their own group before they
+                // are logged, so the logged inputs are no longer clauses of the
+                // problem and cannot be matched by an external checker; and it
+                // was applied to the first group only, since internalize_goal
+                // sets m_is_cnf after its first call.
+                flet<bool> _no_preprocess(m_is_cnf, true);
+                res = internalize_goal(g);
+            }
             if (e) e->set_itp_group(0);
             if (res == l_undef)
                 return res;

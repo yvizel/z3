@@ -45,12 +45,14 @@ Proof checker for clauses created during search.
 #include "ast/ast_ll_pp.h"
 #include "ast/arith_decl_plugin.h"
 #include "smt/smt_solver.h"
+#include "sat/sat_solver/inc_sat_solver.h"
 #include "sat/sat_solver.h"
 #include "sat/sat_drat.h"
 #include "sat/sat_proof_trim.h"
 #include "sat/smt/euf_proof_checker.h"
 #include "sat/smt/itp_visitor.h"
 #include "sat/smt/cert_visitor.h"
+#include "util/stopwatch.h"
 #include <fstream>
 #include "ast/ast_pp.h"
 #include "ast/rewriter/th_rewriter.h"
@@ -263,6 +265,14 @@ public:
         }
     }
 
+    // Solver for the interpolant validity checks: the SAT-based core with the
+    // EUF solver, i.e. the kind of solver that produced the proof. (The legacy
+    // SMT core does not cope with inputs of the size the flow handles.)
+    solver* mk_check_solver(params_ref& p) {
+        p.set_bool("euf", true);
+        return mk_inc_sat_solver(m, p, false);
+    }
+
     // Verify the computed interpolant I for the (A, B) pair:
     //   (1) A => I, (2) I /\ B is unsatisfiable, (3) I uses only shared symbols.
     void check_interpolant(expr* itp, std::ostream& out) {
@@ -272,7 +282,7 @@ public:
 
         // (1) A => I, i.e. A /\ not I is unsatisfiable.
         {
-            solver_ref s = mk_smt_solver(m, p, symbol::null);
+            solver_ref s = mk_check_solver(p);
             s->assert_expr(A);
             s->assert_expr(m.mk_not(itp));
             lbool r = s->check_sat();
@@ -282,7 +292,7 @@ public:
 
         // (2) I /\ B is unsatisfiable.
         {
-            solver_ref s = mk_smt_solver(m, p, symbol::null);
+            solver_ref s = mk_check_solver(p);
             s->assert_expr(B);
             s->assert_expr(itp);
             lbool r = s->check_sat();
@@ -402,14 +412,19 @@ public:
             cert.set_labeling(sat::itp_labeling::dual);
         init_itp_visitor(cert);
         std::ostringstream sink;
+        stopwatch sw;
+        sw.start();
         trim.replay_with_visitor(ids, cert, sink);
+        double t_replay = sw.get_seconds();
         cert.set_raw_interpolant(raw_interpolant);
         std::ofstream file(m_certificate.str());
         if (!file) {
             out << "; certificate: cannot open " << m_certificate << "\n";
             return;
         }
-        if (cert.write(file))
+        bool ok = cert.write(file);
+        IF_VERBOSE(1, verbose_stream() << "; certificate: replay " << t_replay << " s, serialization " << (sw.get_seconds() - t_replay) << " s\n");
+        if (ok)
             out << "; certificate written to " << m_certificate << "\n";
         else
             out << "; certificate NOT written: " << cert.error() << "\n";
@@ -444,6 +459,14 @@ public:
                 rw(interpolant, simplified);
                 interpolant = simplified;
             }
+            if (itp.has_nonshared_interpolant())
+                out << "; WARNING: the partial interpolant of a theory lemma uses non-shared symbols; the interpolant is not a Craig interpolant\n";
+            if (itp.has_uninterpolated_lemma())
+                out << "; WARNING: an EUF lemma has no partial interpolant; the interpolant may be wrong\n";
+            IF_VERBOSE(1, if (itp.num_exchange_lemmas())
+                              verbose_stream() << "; " << itp.num_exchange_lemmas() << " theory lemma(s) interpolated by equality exchange\n");
+            if (itp.has_mixed_atom())
+                out << "; WARNING: the proof contains atoms mixing A-local and B-local symbols; the interpolant may use non-shared symbols\n";
             out << "; interpolant: " << mk_pp(interpolant, m) << "\n";
             if (m_check_interpolant && interpolant)
                 check_interpolant(interpolant, out);
